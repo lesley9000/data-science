@@ -1,0 +1,142 @@
+---
+title: "bookcrossing-csv"
+output: html_notebook
+---
+
+[CSV-Dateien](http://www2.informatik.uni-freiburg.de/~cziegler/BX/) importieren:
+
+CSV-Datei *books*:
+
+```{r}
+library(readr)
+books <- read_delim("BX-Books.csv", ";", 
+    escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+CSV-Datei *users*:
+
+```{r}
+library(readr)
+users <- read_delim("BX-Users.csv", ";", 
+    escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+CSV-Datei *ratings*:
+
+```{r}
+library(readr)
+ratings <- read_delim("BX-Book-Ratings.csv", 
+    ";", escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+Tidyverse laden:
+
+```{r}
+library(tidyverse)
+```
+
+Irrelevante Spalten aus *books* entfernen:
+
+```{r}
+books <- books %>%
+  select(-"Image-URL-S",-"Image-URL-M",-"Image-URL-L") 
+```
+
+Konsequente Kleinschreibung einführen:
+
+```{r}
+books <- books %>%
+   mutate(`Book-Author` = str_to_lower(`Book-Author`))
+
+books <- books %>%
+   mutate(`Book-Title` = str_to_lower(`Book-Title`))
+
+books <- books %>%
+   mutate(Publisher = str_to_lower(Publisher))
+```
+
+Erscheinungsjahr 0 in *NA* umwandeln:
+
+```{r}
+books <- books %>%
+  mutate(`Year-Of-Publication` = na_if(`Year-Of-Publication`, 0))
+```
+
+*Location* in *users* vereinfachend auf das Land verkürzen:
+
+```{r}
+users <- users %>%
+  mutate(Location = str_remove(Location, ".*, "))
+```
+
+Location *","* durch NA ersetzen:
+
+```{r}
+users <- users %>%
+  mutate(Location = na_if(Location, ","))
+```
+
+Datentyp der Spalte *Age* zu *Numeric* ändern:
+
+```{r}
+users <- users %>%
+  mutate(Age = as.numeric(Age))
+```
+
+Unwahrscheinliche Altersangaben > 100 und < 6 auf *NA* setzen:
+
+```{r}
+users$Age[users$Age > 100] <- NA
+users$Age[users$Age < 6] <- NA
+```
+
+Rating *0* durch *NA* ersetzen:
+
+```{r}
+ratings <- ratings %>%
+  mutate(`Book-Rating` = na_if(`Book-Rating`, 0))
+```
+
+*ratings* und *books* auf Grundlage der ISBN zusammenführen:
+
+```{r}
+books_w_ratings <- books %>%
+  left_join(ratings)
+```
+
+*users* und *books_w_ratings* auf Grundlage der User-ID zusammenführen:
+
+```{r}
+bookcrossing <- books_w_ratings %>%
+  left_join(users)
+```
+
+Spaltennamen vereinfachen und konsequent kleinschreiben: 
+
+```{r}
+bookcrossing <- bookcrossing %>%
+  rename(isbn = ISBN) %>%
+  rename(title = `Book-Title`) %>%
+  rename(author = `Book-Author`) %>%
+  rename(year = `Year-Of-Publication`) %>%
+  rename(publisher = Publisher) %>%
+  rename(user_id = `User-ID`) %>%
+  rename(rating = `Book-Rating`) %>%
+  rename(location = Location) %>%
+  rename(age = Age)
+```
+
+Ratings für nach 2004 erschienene Bücher auf *NA* setzen:
+
+```{r}
+bookcrossing$rating[bookcrossing$year > 2004] <- NA
+```
+
+Bereinigtes und zusammengeführtes Data Frame *bookcrossing* in CSV-Datei schreiben:
+
+```{r}
+write_csv(bookcrossing, "bookcrossing.csv")
+```
