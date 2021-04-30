@@ -1,0 +1,308 @@
+---
+title: "Session 02 | 2021-04-17"
+output: html_notebook
+---
+
+#### 1. Vorhaben
+
+Untersucht wird das [Book-Crossing Dataset](http://www2.informatik.uni-freiburg.de/~cziegler/BX/) mit 200.000+ Büchern und deren von verschiedenen Usern verfassten Bewertungen. Nach dem Download müssen die drei CSV-Dateien im Working Directory abgelegt werden.
+
+Ziel ist es, die Beziehungen zwischen verschiedenen Variablen zu untersuchen und zu prüfen, ob sich in den Daten Muster erkennen lassen, auf deren Basis Vorhersagen getroffen werden können.
+
+Folgende Fragen sollen beantwortet werden:
+
+* Gibt es eine Korrelation zwischen Anzahl Bücher pro Publisher und Anzahl Ratings, die die Bücher eines Publishers erhalten?
+* Haben ältere Bücher mehr Ratings, weil sie mehr Zeit haben, um Ratings zu sammeln?
+* Kann man mit einer linearen Regression etwas davon vorhersagen?
+
+#### 2. CSV-Dump einlesen
+
+Im ersten Schritt werden drei CSV-Dateien importiert.
+
+CSV-Datei *books*:
+```{r}
+library(readr)
+books <- read_delim("BX-Books.csv", ";", 
+    escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+CSV-Datei *users*:
+```{r}
+library(readr)
+users <- read_delim("BX-Users.csv", ";", 
+    escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+CSV-Datei *ratings*:
+```{r}
+library(readr)
+ratings <- read_delim("BX-Book-Ratings.csv", 
+    ";", escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+#### 3. Daten aufbereiten und zusammenführen
+
+Um die Daten bereinigen und aufbereiten zu können, wird das Tidyverse verwendet, welches zunächst geladen werden muss:
+```{r}
+library(tidyverse)
+```
+
+Jene Spalten des Data Frames *books*, die für die eingangs gesetzten Fragestellungen irrelevant sind, werden entfernt:
+```{r}
+books <- books %>%
+  select(-"Image-URL-S",-"Image-URL-M",-"Image-URL-L") 
+```
+
+Um Variationen in der Groß- und Kleinschreibung aufzulösen und zu verhindern, dass *Michael Crichton* und *MICHAEL CRICHTON* wie zwei gänzlich verschiedene Autoren behandelt werden, wird nach dem Vorbild des Data Frames *users* auch für das Data Frame *books* eine konsequente Kleinschreibung eingeführt:
+
+```{r}
+books <- books %>%
+   mutate(`Book-Author` = str_to_lower(`Book-Author`))
+
+books <- books %>%
+   mutate(`Book-Title` = str_to_lower(`Book-Title`))
+
+books <- books %>%
+   mutate(Publisher = str_to_lower(Publisher))
+```
+
+Um Ausreißer schnell identifizieren zu können, wird die Verteilung der Erscheinungsjahre in einem Boxplot begutachtet:
+
+```{r}
+ggplot(data = books, aes(x = "", y = `Year-Of-Publication`)) + 
+  geom_boxplot() +
+  labs(title="Verteilung des Erscheinungsjahres", x="", y="Erscheinungsjahr")
+```
+
+Die Hauptaussage des unvorteilhaft gequetschten Plots liegt auf der Hand: Es gibt eine verdächtige Ansammlung von Ausreißern um das Jahr 0. Um einer Verzerrung vorzubeugen, wird das Erscheinungsjahr 0 in *NA* umgewandelt:
+
+```{r}
+books <- books %>%
+  mutate(`Year-Of-Publication` = na_if(`Year-Of-Publication`, 0))
+```
+
+Auch das Data Frame *users* ist noch verbesserungswürdig. Um die Angabe des Wohnortes der User zu vereinfachen, soll der String in der Spalte *Location* auf das Land verkürzt werden, welches konsequent am Ende steht und durch ein Komma abgetrennt wird. Dieses Muster erlaubt es, mithilfe der Funktion *str_remove()* einen Regular Expression einzusetzen, welcher mehrere Zeichen bis hin zum Komma entfernt:
+
+```{r}
+users <- users %>%
+  mutate(Location = str_remove(Location, ".*, "))
+```
+
+Wenig zielführend ist, dass eine Reihe von Usern, die sich dem Muster widersetzt haben, nun im Ort *","* lebt. Dieses Komma wird durch *NA* ersetzt:
+
+```{r}
+users <- users %>%
+  mutate(Location = na_if(Location, ","))
+```
+
+Problematisch ist zudem, dass die Spalte *Age* als Datentyp *Character* importiert wurde. Dieser Datentyp wird nun zu *Numeric* geändert, was gleichzeitig *NULL*-Einträge in *NA* umwandelt:
+
+```{r}
+users <- users %>%
+  mutate(Age = as.numeric(Age))
+```
+
+Wie sieht die *Age*-Spalte nun aus?
+
+```{r}
+summary(users$Age)
+```
+
+Der jüngste User ist null Jahre alt, während der älteste beeindruckende 244 Jahre vorweisen kann. Wie viele User fallen in diese mindestens unwahrscheinlichen Altersgruppen?
+
+```{r}
+users %>%
+  filter(Age > 100 | Age < 6)
+```
+
+Insgesamt 1274 verdächtige User sind angeblich unter sechs oder über 100 Jahre alt. Um den Verzerrungseffekt der Schummelei abzuschwächen, werden ihre Altersangaben auf *NA* gesetzt:
+
+```{r}
+users$Age[users$Age > 100] <- NA
+users$Age[users$Age < 6] <- NA
+```
+
+Zu guter Letzt wird das Data Frame *ratings* unter die Lupe genommen. Der aufmerksame Leser entnimmt der [Website](http://www2.informatik.uni-freiburg.de/~cziegler/BX/) des Book-Crossing Datasets, dass eine Bewertung von 0 nicht etwa auf größte Unzufriedenheit vonseiten der Leser hinweist, sondern schlichtweg bedeutet, dass gar keine Bewertung abgegeben wurde. Dementsprechend werden alle 0-Bewertungen durch *NA* ersetzt:
+
+```{r}
+ratings <- ratings %>%
+  mutate(`Book-Rating` = na_if(`Book-Rating`, 0))
+```
+
+Es ist an der Zeit, die Data Frames zusammenzuführen. Zunächst wird *ratings* auf Grundlage der ISBN dem Data Frame *books* hinzugefügt:
+
+```{r}
+books_w_ratings <- books %>%
+  left_join(ratings)
+```
+
+Über die User-ID kann nun auch *users* dem neuen, allumfassenden Data Frame *bookcrossing* hinzugefügt werden:
+
+```{r}
+bookcrossing <- books_w_ratings %>%
+  left_join(users)
+```
+
+Um vollste Einheitlichkeit herzustellen und Tippfehler zu vermeiden, werden nun auch alle Spaltennamen konsequent kleingeschrieben und bei der Gelegenheit vereinfacht:
+
+```{r}
+bookcrossing <- bookcrossing %>%
+  rename(isbn = ISBN) %>%
+  rename(title = `Book-Title`) %>%
+  rename(author = `Book-Author`) %>%
+  rename(year = `Year-Of-Publication`) %>%
+  rename(publisher = Publisher) %>%
+  rename(user_id = `User-ID`) %>%
+  rename(rating = `Book-Rating`) %>%
+  rename(location = Location) %>%
+  rename(age = Age)
+```
+
+Weil die Daten im Jahr 2004 erhoben wurden, werden zu guter Letzt alle Ratings für nach 2004 erschienene Bücher auf *NA* gesetzt:
+
+```{r}
+bookcrossing$rating[bookcrossing$year > 2004] <- NA
+```
+
+#### 4. Daten speichern
+
+Das bereinigte und zusammengeführte Data Frame *bookcrossing* wird über die Konsole in einer CSV-Datei gespeichert, welche in Zukunft importiert werden kann:
+
+```{r}
+# write_csv(bookcrossing, "bookcrossing.csv")
+```
+
+#### 5. Korrelation Bücher/Publisher und Ratings/Publisher?
+
+Um die Frage zu klären, ob es eine Korrelation zwischen der Anzahl an Büchern pro Publisher und der Anzahl an Ratings, die die Bücher eines Publishers erhalten, gibt, sind folgende Variablen von Relevanz:
+
+* Anzahl der Bücher, die ein Verlag veröffentlicht hat
+* Anzahl der Bewertungen, die ein Verlag erhalten hat
+
+Geprüft werden soll, ob die unabhängige Variable der Buchanzahl Einfluss auf die abhängige Variable der Bewertungsanzahl hat.
+
+Zunächst werden die gewünschten Variablen aus dem Dataset *bookcrossing* herausgefiltert und in einem Tibble zusammengestellt:
+
+```{r}
+(ratings_vs_books <- bookcrossing %>%
+  group_by(publisher) %>%
+  mutate(number_of_ratings = n()) %>%
+  select(publisher, title, number_of_ratings) %>%
+  unique() %>%
+  mutate(number_of_books = n()) %>%
+  ungroup() %>%
+  select(number_of_books, number_of_ratings))
+```
+
+Anschließend kann die Beziehung zwischen den Variablen in einem Scatterplot visualisiert werden:
+
+```{r}
+ggplot(ratings_vs_books, aes(x = number_of_books, y = number_of_ratings)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "blue") +
+  labs(title = "Korrelation Bücher/Publ. & Ratings/Publ.", x = "Anzahl an Büchern", y = "Anzahl an Ratings")
+```
+
+Indem in der Funktion *stat_smooth()* die Methode *lm* (Linear Model) verwendet wird, kann zugleich eine lineare Regressionslinie eingezeichnet werden - jene Linie also, die sich den Weg mit dem geringstmöglichen Abstand zu den Datenpunkten sucht.
+
+Es wird ein Korrelationstest durchgeführt:
+
+```{r}
+cor.test(ratings_vs_books$number_of_books, ratings_vs_books$number_of_ratings)
+```
+
+Der Korrelationskoeffizient *cor* misst, wie stark der Zusammenhang zwischen zwei Variablen ist. In diesem Fall beträgt der Wert gerundet 0.83.
+
+Weil der Wert größer als 0 ist, sind die Variablen positiv miteinander assoziiert: Steigt die Anzahl der Bücher, so steigt ebenfalls die Anzahl der Bewertungen. Würde der Wert genau 1 betragen, so würden sich alle Datenpunkte perfekt auf der Linie befinden. Dies ist jedoch nicht der Fall - es liegt also eine Streuung vor.
+
+Je näher der Wert an der 0 liegt, desto höher fällt diese Streuung aus. Tatsächlich liegt der Wert jedoch sehr nahe an der 1, sodass sich die Stärke des Zusammenhangs als hoch bezeichnen lässt. Diese Aussage sollte mit dem Vorbehalt genossen werden, dass der Korrelationskoeffizient nur eine Aussage darüber treffen kann, wie stark ein Zusammenhang wäre, wenn es ihn gäbe - die tatsächliche Existenz eines Zusammenhangs vermag er nämlich nicht zu bestätigen.
+
+Vielleicht lässt sich die Möglichkeit einer Korrelation besser beurteilen, wenn eine Zusammenfassung des Modells betrachtet wird:
+
+```{r}
+fit <- lm(ratings_vs_books$number_of_ratings ~ ratings_vs_books$number_of_books)
+
+summary(fit)
+```
+
+Interessant ist zunächst einmal das Bestimmtheitsmaß (R-squared), welches die Güte des Zusammenhangs bezeichnet bzw. wie gesichert der Zusammenhang ist. Wie gut kann das Modell die Datenlage und die dort auftretende Streuung erklären?
+
+R-squared beträgt gerundet 0.69, was bedeutet, dass das Modell die Varianz in der abhängigen Variable zu 69% erklären kann. Dieser Wert befindet sich im oberen Mittelfeld und könnte vielleicht als "gerade noch gut" bezeichnet werden.
+
+Der p-Wert zeigt an, inwieweit die Ergebnisse statistisch signifikant sind, und beträgt hier < 2.2e-16.
+
+Bei den Residuen lässt sich beobachten, dass der Maximalwert deutlich weiter vom Median entfernt ist als der Minimalwert - wünschenswert wäre eine gleichmäßige Verteilung um den Median.
+
+Besteht nun eine Korrelation zwischen der Anzahl der Bücher und der Anzahl der Bewertungen eines Verlages?
+
+Das Ergebnis scheint nicht ganz eindeutig zu sein: Der hohe Korrelationskoeffizient wird etwas durch das durchschnittliche Bestimmtheitsmaß relativiert. Vielleicht ließe sich vorsichtig formulieren, dass sich durchaus von einem Zusammenhang zwischen den Variablen sprechen lässt. Dieser Zusammenhang ist jedoch nicht stark genug, um klare Vorhersagen treffen zu können: Kein Verlag kann fest davon ausgehen, bei einer Erhöhung seiner Veröffentlichungszahlen zwingend auch mehr rezensierende Leser zu gewinnen - eine derart sichere Prognose kann die lineare Regression nicht treffen.
+
+#### 6. Korrelation Erscheinungsjahr und Anzahl/Bewertungen?
+
+Für die Frage, ob ältere Bücher mehr Ratings haben, sind folgende Variablen relevant:
+
+* Erscheinungsjahr der Bücher
+* Anzahl der Bewertungen, die ein Buch erhalten hat
+
+Geprüft werden soll, ob die unabhängige Variable des Erscheinungsjahres Einfluss auf die abhängige Variable der Bewertungsanzahl hat. Sind die Variablen negativ assoziiert, d.h.: Sinkt das Erscheinungsjahr, wenn die Bewertungsanzahl steigt?
+
+Zunächst werden die gewünschten Variablen aus dem Dataset *bookcrossing* herausgefiltert und in einem Tibble zusammengestellt, wobei für die Variable *year* extreme Ausreißer nach unten und zum Zeitpunkt der Datenerhebung (2004) noch nicht erschienene Bücher herausgefiltert werden:
+
+```{r}
+(year_vs_ratings <- bookcrossing %>%
+   filter(year > 1800 & year < 2005) %>%
+   group_by(title) %>%
+   mutate(number_of_ratings = n()) %>%
+   select(title, year, number_of_ratings) %>%
+   unique() %>%
+   ungroup() %>%
+   select(year, number_of_ratings))
+```
+
+Anschließend kann die Beziehung zwischen den Variablen in einem Scatterplot visualisiert werden:
+
+```{r}
+ggplot(year_vs_ratings, aes(x = year, y = number_of_ratings)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "blue") +
+  labs(title = "Korrelation Jahr & Ratings/Buch", x = "Erscheinungsjahr", y = "Anzahl an Ratings")
+```
+
+Das Ergebnis ist eine interessante Skischanze, die auf den ersten Blick ersichtlich werden lässt, dass der eingangs formulierte Gedanke, Erscheinungsjahr und Anzahl an Bewertungen könnten negativ assoziiert sein, nicht stimmt.
+
+Bücher aus einer breiten Spanne an Jahrgängen weisen wenige Bewertungen auf, sodass sich nicht vom Erscheinungsjahr auf die Anzahl der Bewertungen schließen lässt. Auch die horizontale Regressionslinie verrät bereits, dass R-squared den Wert 0.0 hat.
+
+Tatsächlich lässt sich jedoch andersherum beobachten, dass jene Bücher mit vielen Bewertungen eher neu, d.h. um die Jahrtausendwende herum erschienen sind - vielleicht, weil neuere Bücher für die Leser interessanter sind und dementsprechend auch öfter bewertet werden.
+
+Es wird ein Korrelationstest durchgeführt:
+
+```{r}
+cor.test(year_vs_ratings$year, year_vs_ratings$number_of_ratings)
+```
+
+Mit einem schwächlichen Wert von 0.03 liegt der Korrelationskoeffizient sehr nahe an der 0, sodass die Streuung sehr hoch ist - die Datenpunkte liegen kaum auf der Best-Fit-Linie und der Zusammenhang zwischen den Variablen ist äußerst schwach bzw. nicht-existent.
+
+Nun wird die Zusammenfassung des Modells betrachtet:
+
+```{r}
+fit2 <- lm(year_vs_ratings$number_of_ratings ~ year_vs_ratings$year)
+
+summary(fit2)
+```
+
+Wieder ist der Maximalwert bei den Residuen deutlich weiter vom Median entfernt als der Minimalwert, sodass eine ungleichmäßige Verteilung um den Median vorliegt. Der p-Wert beträgt erneut < 2.2e-16.
+
+Wie bereits durch die Regressionslinie angekündigt, beträgt das Bestimmtheitsmaß (R-squared) gerundet 0.00 und enthält damit die klare Aussage, dass das Modell 0% der Abweichungen - also rein gar nichts - zu erklären vermag.
+
+In diesem Fall ist das Ergebnis also eindeutig: Das Erscheinungsjahr hilft überhaupt nicht dabei, Vorhersagen über die Anzahl der Bewertungen zu treffen.
+
+#### 7. Fazit
+
+Einen Plot zu erstellen, ist eine Sache - ihn richtig zu interpretieren, anscheinend eine ganz andere. Es fällt schwer, klare Aussagen zu treffen - insbesondere dann, wenn man durchschnittliche Werte zu deuten versucht.
+
+Auch habe ich das Gefühl, bei meinem Verständnis von den Modellzusammenfassungen noch sehr an der Oberfläche zu kratzen. Wie sind die kryptischen Zahlen zu verstehen? Was bedeutet ein p-Wert von < 2.2 mal 10 hoch -16?
+
+Mitzunehmen ist in jedem Fall, dass die Statistik als Teilgebiet der Mathematik erstaunlich offen für Interpretationen zu sein scheint.

@@ -1,0 +1,326 @@
+---
+title: "Session 01 | 2021-04-10"
+output: html_notebook
+---
+
+#### 1. Vorhaben
+
+Untersucht wird das [Book-Crossing Dataset](http://www2.informatik.uni-freiburg.de/~cziegler/BX/) mit 200.000+ Büchern und deren von verschiedenen Usern verfassten Bewertungen. Nach dem Download müssen die drei CSV-Dateien im Working Directory abgelegt werden.
+
+Im Zuge einer explorativen Datenanalyse sollen folgende Fragen beantwortet werden:
+
+* Welche Bücher sind am besten bewertet?
+* Sollte die Anzahl der Bewertungen auch mit reinspielen?
+* Welche Autoren sind am besten bewertet?
+* Welcher Verlag hat die besten Bücher?
+
+#### 2. CSV-Dump einlesen
+
+Im ersten Schritt werden drei CSV-Dateien importiert.
+
+CSV-Datei *books*:
+```{r}
+library(readr)
+books <- read_delim("BX-Books.csv", ";", 
+    escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+CSV-Datei *users*:
+```{r}
+library(readr)
+users <- read_delim("BX-Users.csv", ";", 
+    escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+CSV-Datei *ratings*:
+```{r}
+library(readr)
+ratings <- read_delim("BX-Book-Ratings.csv", 
+    ";", escape_backslash = TRUE, escape_double = FALSE, 
+    trim_ws = TRUE)
+```
+
+#### 3. Daten aufbereiten
+
+Um die Daten bereinigen und aufbereiten zu können, wird das Tidyverse verwendet, welches zunächst geladen werden muss:
+```{r}
+library(tidyverse)
+```
+
+Jene Spalten des Data Frames *books*, die für die eingangs gesetzten Fragestellungen irrelevant sind, werden entfernt:
+```{r}
+books <- books %>%
+  select(-"Image-URL-S",-"Image-URL-M",-"Image-URL-L") 
+```
+
+Auf Grundlage der ISBN werden die Data Frames *books* und *ratings* zusammengeführt:
+```{r}
+books_w_ratings <- books %>%
+  left_join(ratings)
+```
+
+Es wird sich ein erster Überblick über das neue Data Frame verschafft:
+```{r}
+head(books_w_ratings)
+summary(books_w_ratings)
+
+```
+Folgende Auffälligkeiten stoßen dabei ins Auge:
+
+* Es gibt Bücher, die angeblich im Jahr 2050 erscheinen sollen - vielleicht ein Zeichen weiter Vorausplanung vonseiten der Verlage, doch in jedem Fall können noch nicht erschienene Bücher nicht fair bewertet werden, sodass diese Datensätze entfernt werden sollten.
+* Auch Bücher, die im Jahre 0 publiziert sein sollen, erscheinen verdächtig, doch ein Fehler im Veröffentlichungsdatum lässt die Bewertung nicht unbrauchbar werden.
+* Sowohl *User-ID* als auch *Book-Rating* weisen 1208 NAs auf, sodass 1208 Bücher gar nicht bewertet wurden. Da sie somit irrelevant für die verfolgten Fragestellungen sind, sollten sie entfernt werden.
+
+Wie viele Bücher haben ein Erscheinungsdatum > 2021?
+```{r}
+future_books <- books_w_ratings %>%
+  filter(`Year-Of-Publication` > 2021)
+count(future_books)
+```
+
+Diese 54 Bücher werden mithilfe logischer Negation (!) entfernt:
+```{r}
+books_w_ratings <- books_w_ratings[!(books_w_ratings$`Year-Of-Publication` > 2021),]
+```
+
+Sicherheitshalber wird geprüft, ob die NA-Datensätze von *User-ID* tatsächlich mit den NA-Datensätzen von *Book-Rating* übereineinstimmen:
+```{r}
+NA_books <- books_w_ratings %>%
+  filter(is.na(`User-ID`) & is.na(`Book-Rating`))
+count(NA_books)
+```
+
+Ja - 1208 Datensätze erfüllen beide Bedingungen und werden nun ebenfalls entfernt:
+```{r}
+books_w_ratings <- books_w_ratings[!is.na(books_w_ratings$`User-ID`) & !is.na(books_w_ratings$`Book-Rating`),]
+```
+
+#### 4. Explorative Datenanalyse
+
+##### 4.1 Welche Bücher sind am besten bewertet?
+
+Zunächst werden die Bücher nach dem Titel gruppiert. Anschließend wird der Durchschnittswert (Mean) ihrer Bewertungen berechnet:
+```{r}
+mean_book_ratings <- books_w_ratings %>%
+	group_by(`Book-Title`) %>%
+	summarise(mean_r = mean(`Book-Rating`))
+```
+
+Um die Verteilung der Durchschnittsbewertung betrachten zu können, wird ein Histogramm erstellt:
+```{r}
+ggplot(mean_book_ratings, aes(x=mean_r)) + 
+  geom_histogram(binwidth=0.5, color="darkblue", fill="lightblue") +
+  labs(title="Verteilung der Durchschnittsbewertung", x="Durchschnittsbewertung", y="Anzahl an Büchern")
+```
+
+Die Betrachtung des Histogramms zeigt, dass eine überwältigende Anzahl an Büchern (100.000+) eine denkbar schlechte Durchschnittsbewertung von 0 Punkten hat.
+
+Um herauszufinden, welche Bücher am besten bewertet sind, werden in einem ersten Versuch jene Titel herausgefiltert, die im Durchschnitt die stolze Höchstbewertung von 10 Punkten aufweisen:
+
+```{r}
+mean_book_ratings %>%
+  filter(mean_r == 10)
+```
+
+Ganze 11.758 Bücher haben im Durchschnitt 10 Punkte erhalten, sodass sich an dieser Stelle noch kein klarer Sieger hervortut.
+
+##### 4.2 Sollte die Anzahl der Bewertungen auch mit reinspielen?
+
+Möglicherweise lassen sich klarere Erkenntnisse gewinnen, wenn die Höhe der Bewertungen in Beziehung zu ihrer Anzahl gesetzt wird - immerhin erscheint es etwas unfair, ein Buch, das einmal 10 Punkte erhalten hat, als ebenso beliebt einzustufen wie eines, dem 500 User die Höchstpunktzahl gegeben haben.
+
+Zunächst wird ermittelt, wie viele Bewertungen jedes Buch erhalten hat. Hierfür werden die Datensätze nach Buchtitel gruppiert, die Anzahl der Beobachtungen summiert und anschließend für eine bessere Übersichtlichkeit in absteigender Reihenfolge angeordnet:
+```{r}
+anzahl_ratings <- books_w_ratings %>%
+  group_by(`Book-Title`) %>%
+  summarize(a_ratings = n()) %>%
+  arrange(desc(a_ratings))
+```
+
+Was ist die Minimal-, was die Maximalanzahl an Bewertungen?
+```{r}
+min(anzahl_ratings$a_ratings)
+max(anzahl_ratings$a_ratings)
+```
+
+Während das am häufigsten bewertete Buch ganze 2502 Ratings aufweist, gibt es gleichzeitig Titel, die lediglich von einer Person bewertet wurden - die Spanne ist also ziemlich groß.
+
+Wie viele Bewertungen hat ein Buch im Durschschnitt?
+```{r}
+mean_anzahl_ratings <- anzahl_ratings %>%
+  summarise(mean_a = mean(a_ratings))
+round(mean_anzahl_ratings)
+```
+
+Im Durchschnitt wurde ein Buch lediglich viermal bewertet.
+
+Um die Durschnittsbewertung in Beziehung zur Anzahl der Bewertungen setzen zu können, wird die Spalte *mean_r* des Data Frames *mean_book_ratings* auf Basis des Buchtitels zu dem Data Frame *anzahl_ratings* hinzugefügt:
+
+```{r}
+anzahl_ratings_w_mean <- anzahl_ratings %>%
+  left_join(mean_book_ratings)
+```
+Anschließend lässt sich die Beziehung mithilfe eines Scatterplots visualisieren:
+```{r}
+ggplot(data = anzahl_ratings_w_mean, mapping = aes(x = a_ratings, y = mean_r)) + 
+  geom_point(alpha = 1/10) +
+  labs(title="Beziehung zw. Bewertungsanzahl & -durchschnitt", x="Anzahl an Bewertungen", y="Durchschnittsbewertung")
+```
+
+Der Plot offenbart, dass die Variation der Bewertungen abnimmt, wenn sich die Anzahl der Bewertungen vergrößert: Je weniger Bewertungen abgegeben wurden, desto uneiniger sind sich die User über die Qualität des Buches. Je mehr Bewertungen abgegeben wurden, desto geringer die Variation und desto eindeutiger das Meinungsbild.
+
+Die Frage, ob die Anzahl der Bewertungen auch eine Rolle spielt, lässt sich also klar mit ja beantworten.
+
+Wie lässt sich nun beurteilen, welche Bücher bei den Usern am beliebtesten sind?
+
+Um eine Aussage treffen zu können, soll an dieser Stelle arbiträr festgelegt werden, dass ein Buch mindestens eine Durschnittsbewertung von 8 Punkten und zudem eine Mindestanzahl von 10 Bewertungen erhalten haben muss, um als populär zu gelten:
+
+```{r}
+anzahl_ratings_w_mean %>%
+  filter(mean_r >= 8 & a_ratings >= 10)
+```
+
+Eine übersichtliche Anzahl von 13 Büchern erfüllt beide Bedingungen. Obwohl seine Durchschnittsbewertung die niedrigste im Set ist, ist sicherlich der Titel "Free" am beliebtesten, weil er mit 56 Bewertungen mit Abstand am häufigsten gelesen und für gut befunden wurde.
+
+##### 4.3 Welche Autoren sind am besten bewertet?
+
+Aus den obigen Ergebnissen lässt sich mitnehmen, dass neben der Durchschnittsbewertung auch die Anzahl betrachtet werden sollte, sodass für diese Frage folgende Variablen relevant sind:
+
+* Anzahl der Bewertungen eines Autors
+* Durschschnittsbewertung aller Bücher eines Autors
+* Anzahl der Bücher, die ein Autor geschrieben hat
+
+Wie viele Bewertungen haben die jeweiligen Autoren erhalten?
+```{r}
+anzahl_ratings_p_author <- books_w_ratings %>%
+  group_by(`Book-Author`) %>%
+  summarize(a_rpa = n()) %>%
+  arrange(desc(a_rpa))
+```
+
+Nun wird die durchschnittliche Bewertungspunktzahl jedes Autors berechnet:
+```{r}
+mean_author_ratings <- books_w_ratings %>%
+	group_by(`Book-Author`) %>%
+	summarise(mean_ar = mean(`Book-Rating`)) %>%
+  arrange(desc(mean_ar))
+```
+
+Im nächsten Schritt wird ermittelt, wie viele Bücher die jeweiligen Autoren verfasst haben, indem mithilfe der Funktion *n_distinct()* die einzelnen Buchinstanzen pro Autor gezählt werden:
+
+```{r}
+anzahl_books_p_author <- books_w_ratings %>%
+  group_by(`Book-Author`) %>%
+  summarize(a_bpa = n_distinct(`Book-Title`)) %>%
+  arrange(desc(a_bpa))
+```
+
+Nun können die Daten zusammengeführt werden. Zunächst wird die Spalte *anzahl_rpa* des Data Frames *anzahl_ratings_p_author* dem Data Frame *anzahl_books_p_author* auf Grundlage des Autornamens hinzugefügt:
+```{r}
+authors_popularity <- anzahl_books_p_author %>%
+  left_join(anzahl_ratings_p_author)
+```
+
+Anschließend wird die Spalte *mean_ar* des Data Frames *mean_author_ratings* dem neuen Data Frame *authors_popularity* hinzugefügt:
+```{r}
+authors_popularity <- authors_popularity %>%
+  left_join(mean_author_ratings)
+```
+
+Alle eingangs als relevant erachteten Variablen sind nun im Data Frame *authors_popularity* vereint. Doch um einschätzen zu können, welche Autoren am beliebtesten sind, müssen erneut gewissermaßen die Parameter der Beliebtheit abgesteckt werden.
+
+Es wird festgelegt, dass ein Autor mindestens fünf Bücher veröffentlicht, mindestens 10 Bewertungen erhalten und im Durchschnitt  mindestens acht Punkte von den Usern bekommen haben muss, um als populär zu gelten:
+
+```{r}
+authors_popularity %>%
+  filter(a_bpa >= 5 & a_rpa >= 10 & mean_ar >= 8) %>%
+  arrange(desc(a_rpa))
+```
+
+Insgesamt 11 Autoren erfüllen alle drei Bedingungen. Da die Datenlage mit jeder Bewertung aussagekräftiger wird, werden die Ergebnisse nach der Bewertungsanzahl in absteigender Reihenfolge sortiert, um ein Ranking der beliebtesten Autoren zu erhalten.
+
+##### 4.4 Welcher Verlag hat die besten Bücher?
+
+Für diese Frage relevante Variablen sind:
+
+* Anzahl der Bewertungen, die ein Verlag erhalten hat
+* Durchschnittsbewertung aller Bücher eines Verlages
+* Anzahl der Bücher, die ein Verlag veröffentlicht hat
+* Durchschnittliche Anzahl der in einem Verlag veröffentlichten Bücher
+
+Wie viele Bewertungen haben die jeweiligen Verlage erhalten?
+```{r}
+anzahl_ratings_p_publisher <- books_w_ratings %>%
+  group_by(Publisher) %>%
+  summarize(a_rpp = n()) %>%
+  arrange(desc(a_rpp))
+```
+
+Als nächstes wird die durchschnittliche Bewertungspunktzahl jedes Verlages berechnet:
+```{r}
+mean_publisher_ratings <- books_w_ratings %>%
+	group_by(Publisher) %>%
+	summarise(mean_pr = mean(`Book-Rating`)) %>%
+  arrange(desc(mean_pr))
+```
+
+Nun wird ermittelt, wie viele Bücher die jeweiligen Verlage publiziert haben:
+
+```{r}
+anzahl_books_p_publisher <- books_w_ratings %>%
+  group_by(Publisher) %>%
+  summarize(a_bpp = n_distinct(`Book-Title`)) %>%
+  arrange(desc(a_bpp))
+```
+
+Es ist an der Zeit, die Daten zusammenzuführen. Zunächst wird die Spalte *anzahl_rpp* des Data Frames *anzahl_ratings_p_publisher* dem Data Frame *anzahl_books_p_publisher* auf Grundlage des Verlagsnamens hinzugefügt:
+```{r}
+publishers_popularity <- anzahl_books_p_publisher %>%
+  left_join(anzahl_ratings_p_publisher)
+```
+
+Anschließend wird die Spalte *mean_pr* des Data Frames *mean_publisher_ratings* dem neuen Data Frame *publishers_popularity* hinzugefügt:
+```{r}
+publishers_popularity <- publishers_popularity %>%
+  left_join(mean_publisher_ratings)
+```
+
+Nun sind drei von vier relevanten Variablen im Data Frame *authors_popularity* versammelt.
+
+Für die letzte Variable wird errechnet, wie viele Bücher ein Verlag im Durchschnitt veröffentlicht:
+```{r}
+mean_anzahl_bpp <- anzahl_books_p_publisher %>%
+  summarise(mean_a_bpp = mean(a_bpp))
+round(mean_anzahl_bpp)
+```
+
+Im Durschschnitt hat ein Verlag 16 Bücher veröffentlicht.
+
+Um einschätzen zu können, welcher Verlag am beliebtesten ist, wird festgelegt, dass ein Verlag mindestens 16 Bücher veröffentlicht, mindestens 10 Bewertungen erhalten und im Durchschnitt  mindestens acht Punkte von den Usern bekommen haben muss, um als erfolgreich zu gelten:
+
+```{r}
+publishers_popularity %>%
+  filter(a_bpp >= 16 & a_rpp >= 10 & mean_pr >= 8) %>%
+  arrange(desc(mean_pr))
+```
+
+Der erfolgreichste Verlag ist "Chaosium". (Das obige Tibble wirft Licht auf eine Schwierigkeit der Datenausgangslage, die im Fazit benannt wird.)
+
+Werden auch Verlage mit unterdurchschnittlich vielen Buchpublikationen (mindestens 10) in die Berechnung mit eingeschlossen, fällt die Liste etwas länger aus:
+
+```{r}
+publishers_popularity %>%
+  filter(a_bpp >= 10 & a_rpp >= 10 & mean_pr >= 8) %>%
+  arrange(desc(mean_pr))
+```
+
+Auch die kleineren Verlage "SOM Publishing" und "Amber Quill Press" sind bei den Usern beliebt.
+
+#### 5. Fazit
+
+Die wichtigste Erkenntnis aus der durchgeführten explorativen Datenanalyse des Book-Crossing Datasets ist, dass ein Durchschnittswert (z. B. an Bewertungen) nur dann aussagekräftig ist, wenn er in Relation zur Anzahl (an Bewertungen) betrachtet wird - je geringer die Anzahl, desto größer die Variation.
+
+Auch sollten statistische Berechnungen idealerweise natürlich erst dann durchgeführt werden, wenn ein absolut gesäubertes Datenset vorliegt. Das Tibble der beliebtesten Verlage führt leider vor Augen, dass dies beim Book-Crossing Dataset noch nicht der Fall ist: "Chaosium" und "Chaosium, Inc." bezeichnen ein- und denselben Verlag, werden jedoch wie zwei gänzlich verschiedene Verlage behandelt.
+
+Dasselbe Problem tritt z. B. bei Schreibvariationen der Autorennamen auf: "Jean Francois Revel" und "Jean-Francois Revel" werden wie unterschiedliche Menschen behandelt. So ist also abschließend selbstkritisch anzumerken, dass im Bereich der Datensäuberung noch Luft nach oben ist.

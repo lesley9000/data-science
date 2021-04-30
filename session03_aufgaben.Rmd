@@ -1,0 +1,329 @@
+---
+title: "Session 03 | 2021-04-24"
+output: html_notebook
+---
+
+#### 1. Einleitung
+
+Untersucht wird das [Book-Crossing Dataset](http://www2.informatik.uni-freiburg.de/~cziegler/BX/) mit 200.000+ Büchern und deren von verschiedenen Usern verfassten Bewertungen.
+
+Um die Ergebnisse dieses Notebooks reproduzieren zu können, müssen zunächst die drei auf der Website zum Download bereitgestellten CSV-Dateien heruntergeladen werden. Anschließend muss das Notebook *bookcrossing-csv* durchlaufen werden, welches ebenfalls im Repositorium *data-science* liegt. Die so entstandene CSV-Datei *bookcrossing* muss im Working Directory abgelegt werden.
+
+Ziel ist es, eine Assoziationsanalyse der Buchautoren vorzunehmen. Im Rahmen einer "Market Basket Analysis" soll mithilfe des Apriori-Algorithmus herausgefunden werden, welche Assoziationsregeln in den Daten versteckt sind. Diese Regeln lassen sich schematisch als Notation formulieren:
+
+> Autor x => Autor y
+
+Gemessen wird das Auftreten von Autor x (LHS/Left-Hand Side oder Antecedent), wenn Autor y (RHS/Right-Hand Side oder Consequent) auftritt - wenn ein User Autor x gelesen bzw. bewertet hat, dann hat er auch Autor y gelesen. Die Stärke dieser Assoziation lässt sich mit den drei Metriken *Support*, *Confidence* und *Lift* näher bestimmen, welche an späterer Stelle erläutert werden sollen.
+
+#### 2. Datenset und Libraries
+
+Zunächst wird das Datenset *bookcrossing* importiert, wobei *encoding* aus Gründen der späteren Darstellung/Verarbeitung von Sonderzeichen wie � auf *latin1* gesetzt wird:
+
+```{r}
+library(readr)
+bookcrossing <- read_csv("bookcrossing.csv", 
+    locale = locale(encoding = "latin1"))
+```
+
+Anschließend werden alle erforderlichen Libraries geladen. Neben dem *tidyverse* zählen hierzu auch *arules*, welche den Apriori-Algorithmus enthält, und *arulesviz*, die später eine Visualisierung der Assoziationen erlaubt.
+
+```{r}
+library(tidyverse)
+library(arules)
+library(arulesViz)
+```
+
+#### 3. Daten filtern und zusammentragen
+
+Für das gesetzte Vorhaben werden nicht alle im Data Frame enthaltenen Daten benötigt. Von Relevanz sind:
+
+* Die Spalten *author*, *user_id* und *rating*
+* Die Anzahl an Bewertungen, die ein Autor erhalten hat, um jene herausfiltern zu können, die nur ein einziges Rating erhalten haben
+* Ein Wert, der die Ratings eines Autors zusammenfasst und vergleichbar macht, um im Sinne der Qualitätssicherung sicherzustellen, dass keine unpopulären Autoren weiterempfohlen werden
+* Die Anzahl an Ratings pro User, um jene herausfiltern zu können, die nur eine einzige Bewertung abgegeben haben
+
+Denkbar wäre auch, die Anzahl an Büchern, die ein Autor geschrieben hat, miteinzubeziehen, um "Eintagsfliegen" herauszufiltern. Da es jedoch schade wäre, einen erfolgreichen Nachwuchsautor mit einem viel gelesenen und gut bewerteten Buch nicht weiterzuempfehlen, wird hiervon abgesehen.
+
+##### 3.1 Anzahl an Ratings pro Autor
+
+Zunächst muss entschieden werden, wie mit den zahlreichen NA-Bewertungen umgegangen wird. Die Lage lässt sich vielleicht so interpretieren, dass in diesen Fällen ein User ein Buch zwar gelesen, sich aber aus unerfindlichen Gründen mit seiner Bewertung enthalten hat. Möglichweise wurde das Buch jedoch auch nicht zu Ende gelesen o.Ä., sodass die Daten an dieser Stelle leider kein vollständiges Bild abgeben.
+
+Um zu ermitteln, wie viele Bewertungen die jeweiligen Autoren erhalten haben, werden die NA-Datensätze daher vor dem Zählen mithilfe logischer Negation (!) herausgefiltert:
+
+```{r}
+anzahl_ratings_p_author <- bookcrossing %>%
+  filter(!is.na(rating)) %>%
+  group_by(author) %>%
+  summarize(anzahl_rpa = n()) %>%
+  arrange(desc(anzahl_rpa))
+```
+
+In einer Summary werden die Lageparameter betrachtet:
+
+```{r}
+summary(anzahl_ratings_p_author$anzahl_rpa)
+```
+
+Der Mittelwert bzw. Median und der Durchschnittswert bzw. Mean weichen stark voneinander ab, was darauf hinweist, dass keine Normalverteilung vorliegt. Aussagekräftiger ist dementsprechend eigentlich der Median, welcher - im Gegensatz zum Mean - weniger anfällig für Ausreißer ist.
+
+In diesem Fall beläuft sich der Median allerdings auf eine mickrige Eins. Weil eine einzige Bewertung leider wenig aussagekräftig ist, wird der Median hier nicht als Referenzwert übernommen, sondern stattdessen festgelegt, dass ein Autor mindestens zwei Bewertungen erhalten haben muss, um in die Assoziationsanalyse miteinbezogen zu werden.
+
+Die Werte werden dem Data Frame *bookcrossing* auf Basis des Autornamens hinzugefügt:
+
+```{r}
+bookcrossing <- bookcrossing %>%
+  left_join(anzahl_ratings_p_author)
+```
+
+##### 3.2 Qualitätssicherung
+
+Nun geht es daran, die Qualität der Autoren zu beurteilen. Zunächst wird eine Summary der Variable *rating* herangezogen:
+
+```{r}
+summary(bookcrossing$rating)
+```
+
+In diesem Fall liegen Median und Mean relativ nahe beieinander. Doch liegt wirklich eine Normalverteilung vor? Um besser urteilen zu können, wird die Verteilung der Werte in einem Histogramm betrachtet:
+
+```{r}
+ggplot(bookcrossing, aes(x = rating)) + 
+  geom_histogram(binwidth = 1, color = "darkblue", fill = "lightblue") +
+  labs(title = "Verteilung der Ratings", x = "Rating-Punkte", y = "Anzahl an Bewertungen")
+```
+
+Das Histogramm zeigt eine linksschiefe bzw. rechtssteile Verteilung, was bedeutet, dass die User häufig höhere Bewertungen abgegeben haben. Eine Normalverteilung liegt demnach nicht vor, sodass der Durchschnittswert erneut wenig aussagekräftig ist.
+
+Interessant ist somit wieder der Median, welcher acht Punkte beträgt. So lässt sich nun festlegen, dass die Bewertungen eines Autors mindestens einen Mittelwert von acht aufweisen sollten, damit dieser als hinreichend populär gelten kann.
+
+Um entsprechend filtern zu können, werden die Mittelwerte der Ratings für jeden Autor ermittelt, wobei NAs erneut ausgespart werden:
+
+```{r}
+median_author_ratings <- bookcrossing %>%
+  filter(!is.na(rating)) %>%
+  group_by(author) %>%
+  summarize(median_ar = median(rating)) %>%
+  arrange(desc(median_ar))
+```
+
+Diese Mittelwerte werden nun dem Data Frame *bookcrossing* auf Basis des Autornamens hinzugefügt:
+
+```{r}
+bookcrossing <- bookcrossing %>%
+  left_join(median_author_ratings)
+```
+##### 3.3 Irrelevante User enttarnen
+
+Möglicherweise gibt es User, die nur eine einzige Bewertung abgegeben haben und daher uninteressant für eine Assoziationsanalyse sind. Um dies zu prüfen, wird gezählt, wie viele Bewertungen die jeweiligen User abgegeben haben:
+
+```{r}
+anzahl_ratings_p_user <- bookcrossing %>%
+  group_by(user_id) %>%
+  summarize(anzahl_rpu = n()) %>%
+  arrange(desc(anzahl_rpu))
+```
+
+In einer Summary werden die Lageparameter betrachtet:
+
+```{r}
+summary(anzahl_ratings_p_user$anzahl_rpu)
+```
+
+Der Median von eins bestätigt, dass tatsächlich eine sehr große Anzahl an Usern in diese bewertungsfaule Gruppe fällt. Um sie herausfiltern zu können, werden die Daten dem Data Frame *bookcrossing* auf Basis der User-ID hinzugefügt:
+
+```{r}
+bookcrossing <- bookcrossing %>%
+  left_join(anzahl_ratings_p_user)
+```
+
+Etwas verdächtig ist zugegebenermaßen auch die Leseratte, die insgesamt stolze 11145 Bewertungen abgegeben hat. Dies ist unwahrscheinlich, aber über viele Jahre hinweg vielleicht nicht unmöglich, sodass an dieser Stelle keine Korrekturen vorgenommen werden.
+
+##### 3.4 Neues Data Frame erstellen und überprüfen
+
+In einem neuen Data Frame *author_association* werden nach den oben dargelegten Parametern alle für die Assoziationsanalyse relevanten Datensätze zusammengestellt:
+
+```{r}
+author_association <- bookcrossing %>%
+  filter(anzahl_rpa >= 2 & median_ar >= 8 & anzahl_rpu >= 2) %>%
+  select("author", "user_id")
+```
+
+Wie ist die Datenqualität bei der Schreibweise der Autorennamen? Indem ein kleines Data Frame mit allen Unique Autoren erstellt wird, kann ein schneller Überblick gewonnen werden:
+
+```{r}
+authors <- author_association %>%
+  select(author) %>%
+  unique()
+```
+
+Unschöne Auffälligkeiten sind:
+
+* Umlaute bzw. Sonderzeichen werden mit seltsamen Symbolen umschrieben, z. B. "hans j�?¼rgen press"
+* Manchmal stehen zwei durch ein Komma getrennte Autoren in einem Feld, z. B. "howard gold,mike chaykin"
+* Aufgrund von inkonsistenten Schreibweisen und/oder Tippfehlern werden einige Autoren wie zwei völlig verschiedene Menschen behandelt, z. B. "gabriel garcia-marquez"/"gabriel gracia marquez" oder "j. k. rowling"/"joanne k. rowling"/"j.k. rowling"
+* Manche Felder enthalten seltsam viel White Space
+* Bisweilen sind überflüssige Punkte eingefügt, z. B. "robin. morgan"
+
+Diese Beobachtungen sind jedoch eher die Ausnahme als die Regel. Im Großen und Ganzen machen die Daten einen guten Eindruck - vermutlich war schon viel dadurch gewonnen, dass im Rahmen der Datensäuberung im Notebook *bookcrossing-csv* bereits eine konsequente Kleinschreibung eingeführt und Dopplungen wie "Michael Crichton" und "MICHAEL CRICHTON" entsprechend vermieden wurden. Momentan fällt offengestanden kein Regular Expression ein, der mit ähnlich geringem Aufwand einen ähnlichen großen Ertrag erzielen könnte.
+
+#### 4. Assoziationsanalyse
+
+Um mit der Market Basket Analysis beginnen zu können, müssen die Daten im Data Frame *author_association* zunächst ins Transaktionen konvertiert werden, wobei jede Transaktion gewissermaßen einen virtuellen Warenkorb repräsentiert.
+
+Im ersten Schritt werden mithilfe der Funktion *split()* die Autoren in Gruppen aufgeteilt, die von der User-ID definiert werden. Anschließend werden diese Daten in Transaktionen umgewandelt und in der Variable *trans* gespeichert:
+
+```{r}
+trans <- as(split(author_association$author, author_association$user_id), "transactions")
+```
+
+Die Funktion *inspect()* erlaubt es, einen ersten Blick auf die Transaktionen zu erhaschen:
+
+```{r}
+inspect(trans[1:5])
+```
+
+Beruhigend ist schon einmal, dass einige bekannte Namen dabei sind.
+
+Mithilfe der Funktion *itemFrequencyPlot()* lässt sich in einem Balkendiagramm darstellen, wie häufig die Autoren in den Transaktionen auftauchen, wobei sich auf die Top 10 beschränkt wird:
+
+```{r}
+itemFrequencyPlot(trans, topN = 10, type = "absolute", main =  "Häufigkeit des Auftretens", ylab = "Häufigkeit (absolut)")
+```
+
+Am häufigsten tritt John Grisham auf, gefolgt von Stephen King, James Patterson und Michael Crichton.
+
+Nun geht es daran, mithilfe des Apriori-Algorithmus die Regeln zu erstellen und in der Variable *rules* zu speichern. Doch zuvor muss entschieden werden, welche Support- und Confidence-Werte dafür festgelegt werden. Der Support beschreibt, wie häufig eine Kombination von Autoren ungeachtet anderer Autoren in einer Transaktion vorkommt. Der Confidence-Wert gibt an, wie wahrscheinlich es ist, dass das Consequent auf der RHS erscheint, wenn auf der LHS das Antecedent auftritt, sodass hiermit also die Stärke der Beziehung gemessen wird.
+
+Um einen Anhaltspunkt zu haben, wird eine Summary der Transaktionen betrachtet:
+
+```{r}
+summary(trans)
+```
+
+Wie der FrequencyPlot bereits verraten hat, tritt der häufigste Autor (John Grisham) insgesamt 4031 Mal auf.
+
+Zusätzlich wird eine Summary der itemFrequency herangezogen:
+
+```{r}
+summary(itemFrequency(trans))
+```
+
+Der gute Grisham (Max.) hat einen Support von gerundet 0.1044; der am wenigsten auftretende Autor hingegen weist einen Support-Wert von gerade einmal 0.0000259 auf. Der Median beträgt 0.0001813.
+
+Wie der oberen Summary entnommen werden kann, beträgt die Density gerundet 0.0008, was bedeutet, dass die Transaktionen überwiegend kurz sind und nur wenige Autoren beinhalten. Dies lässt vermuten, dass auch die Confidence-Werte der Regeln häufig eher niedrig sein könnten.
+
+Beim Herumprobieren wird schnell deutlich, dass ein zu geringer Support die Messlatte zu niedrig setzt und den Computer überfordert, sodass dieser Wert nicht zu gering gesetzt werden sollte. Wird er jedoch zu hoch eingestellt, so fällt auf, dass Kombinationen wie {x => y} und {y => x} häufig direkt untereinander erscheinen. Möglicherweise könnte dies ein Hinweis darauf sein, dass zu wenige Regeln erkannt wurden.
+
+Ein Support von 0.005 scheint vom Computer gut verkraftet zu werden und liefert abwechslungsreichere Ergebnisse. Der Confidence-Wert von 0.1 bedeutet, dass in dem Fall, dass ein User den LHS-Autor gelesen hat, er in 10% der Fälle auch den RHS-Autor gelesen hat.
+
+Um zu verhindern, dass die LHS leer bleibt, wird eine Mindestlänge von zwei Items bzw. Autoren spezifiziert. Indem *verbose* auf *FALSE* gesetzt wird, lässt sich zudem verhindern, dass das Notebook durch für den Moment uninteressante Reports aufgebläht wird:
+
+```{r}
+rules <- apriori(trans, parameter = list(support = 0.005, confidence = 0.1, minlen = 2, target = "rules"), control = list(verbose = FALSE))
+```
+
+Die vom Algorithmus erkannten Regeln werden in einem übersichtlichen Data Frame *rules_df* gespeichert...
+
+```{r}
+rules_df = data.frame(
+  lhs = labels(lhs(rules)),
+  rhs = labels(rhs(rules)), 
+  rules@quality)
+```
+
+...und anschließend nach dem Lift sortiert:
+
+```{r}
+rules_df <- rules_df %>%
+  arrange(desc(lift))
+```
+
+Der Lift-Wert gibt an, wie viel häufiger eine Kombination erscheint, als wenn LHS und RHS statistisch unabhängig voneinander wären. Ein Lift von 1 bedeutet, dass LHS und RHS unabhängig voneinander sind. Prinzipiell gilt: Je höher der Lift, desto besser. Allerdings lässt sich beobachten, dass die Kombinationen mit dem höchsten Lift einen niedrigen Support haben, d. h. selten auftreten.
+
+Es werden die 25 Kombinationen mit den höchsten Lift-Werten betrachtet:
+
+```{r}
+head(rules_df, 25)
+```
+
+Jude Deveraux tritt in 54% der Fälle auf, in denen auch die Kombination John Grisham/Nora Roberts/Sandra Brown auftritt. Diese Dreierkombination in Kombination mit Deveraux tritt 26.2 Mal häufiger auf, als man erwarten würde, wenn sie unabhängig voneinander wären. Das Auftreten ist mit 196 Zählungen jedoch eher gering.
+
+Alternativ werden die Daten nach ihrem Support angeordnet:
+
+```{r}
+rules_df <- rules_df %>%
+  arrange(desc(support))
+
+head(rules_df, 25)
+```
+
+Ziemlich eindeutig ist die Lage im Fall von James Patterson und John Grisham: Wer Patterson gelesen hat, hat auch Grisham gelesen. Grisham tritt in 43.1% der Fälle auf, in denen auch Patterson auftritt. Die Kombination der beiden tritt 4.13 Mal häufiger auf, als man erwarten würde, wenn sie unabhängig voneinander wären. Dieser Lift verblasst natürlich etwas neben den obigen 26.2 Mal - dafür hat die Kombination einen höheren Support von gerundet 0.03 und tritt insgesamt ganze 1090 Mal auf.
+
+Der Apriori-Algorithmus lässt sich auch dafür nutzen, einen bestimmten Autor näher unter die Lupe zu nehmen. Welches Leseverhalten hat z. B. zum Lesen von Stephen King geführt?
+
+Um diese Frage zu beantworten, wird der Algorithmus mit denselben Support- und Confidence-Werten wie oben erneut angewendet, wobei die Anzeige auf *stephen king* als RHS beschränkt wird. Um rare Mehrfachkombinationen mit hohem Lift herauszufiltern, wird dieses Mal auch die *maxlen* auf zwei gesetzt, sodass auch auf der LHS nur jeweils ein Autor erscheint:
+
+```{r}
+rules_sk <- apriori(trans, parameter = list(support = 0.005, confidence = 0.1, minlen = 2, maxlen = 2), appearance = list(default = "lhs", rhs = "stephen king"), control = list(verbose = FALSE))
+```
+
+Die Regeln werden absteigend nach dem Lift-Wert sortiert:
+
+```{r}
+rules_sk <- sort(rules_sk, by = "lift", decreasing = TRUE)
+```
+
+Nun können die Kombinationen mit dem höhsten Lift inspiziert werden:
+
+```{r}
+inspect(head(rules_sk))
+```
+
+Einem User, der einen dieser sechs Autoren gelesen hat, kann guten Gewissens Stephen King empfohlen werden.
+
+Wie sieht es umgekehrt aus, d. h. wen haben User, die Stephen King gelesen haben, noch gelesen? Hierfür wird die Anzeige auf King als LHS beschränkt:
+
+```{r}
+rules_sk2 <- apriori(trans, parameter = list(support = 0.005, confidence = 0.1, minlen = 2, maxlen = 2), appearance = list(default = "rhs", lhs = "stephen king"), control = list(verbose = FALSE))
+
+rules_sk2 <- sort(rules_sk2, by = "lift", decreasing = TRUE)
+
+inspect(head(rules_sk2))
+```
+
+Die obersten drei bzw. vier Namen kommen bekannt vor. (Leider ist Dean Koontz ein Fall für die Datensäuberung.) Mit Judy Blume und Anne Rice sind jedoch auch neue Namen dabei. Auffällig ist, dass laut einer schnellen Google-Recherche nahezu alle Autoren im Suspense- bzw. Horror-Genre zu verorten sind. Eine Ausnahme stellt Judy Blume dar, die jedoch auch den niedrigsten Support-, den zweitniedrigsten Confidence- und den zweitniedrigsten Lift-Wert aufweist. Möglicherweise ist es das Attribut "kontovers", das sie in diese Gruppe rutschen ließ.
+
+#### 5. Visualisierung
+
+Die Library *arulesviz* erlaubt es, die vom Algorithmus gefundenen Regeln zu visualisieren. Zunächst werden die zehn Regeln mit dem höchsten Lift herausgepickt und in der Variable *subrules* gespeichert:
+
+```{r}
+subrules <- head(rules, n = 10, by = "lift")
+```
+
+Anschließend wird diese Untergruppe an Regeln mit der Methode *graph* geplottet:
+
+```{r}
+plot(subrules, method = "graph")
+```
+
+Weil der obige Plot gelinde ausgedrückt gequetscht aussieht, wird zusätzlich ein interaktiver Plot generiert, der sich bei Durchlaufen des Scripts in einem kleinen Fenster öffnet:
+
+```{r}
+plot(subrules, method = "graph", engine = "interactive")
+```
+
+Nach dem Maximieren des Fensters können die Kuller nach Belieben auseinandergezogen werden. Die "Wurzel" des Pfeils repräsentiert die LHS, die Spitze die RHS. Je röter eine Kugel ist, desto höher ist der Lift; je größer sie ist, desto höher ist der Support.
+
+Auffällig ist der Kuller zwischen Nora Roberts, Sandra Brown und Debbie Macomber: Ihre Kugel ist nicht nur relativ rot, sondern auch noch relativ groß, während andere Kugeln bestenfalls eine dieser Eigenschaften aufzuweisen scheinen. Eine erneute Google-Suche offenbart, dass alle drei beliebte US-amerikanische Romance-Autorinnen sind. Wie bereits im Fall von Stephen King und den mit ihm "verwandten" Autoren, kristallisiert sich hier also erneut ein Kombinationscluster heraus, das sich anhand des Buchgenres definieren lässt.
+
+Ein Buchhändler könnte sich hierdurch darin bestätigt fühlen, seine Waren nach Genre sortiert aufzustellen bzw. seinen Kunden Autoren desselben Genres weiterzuempfehlen.
+
+#### 6. Fazit
+
+Der Flaschenhals des Apriori-Algorithmus scheint zu sein, ob man das richtige Gespür für das Setzen eines sinnvollen Support- und Confidence-Wertes hat. Sind die Regeln einmal gefunden, so stellt sich die Schwierigkeit, die beiden Werte in Kombination mit dem Lift zu betrachten und korrekt zu interpretieren. Relativiert ein Wert einen anderen? Ist ein zunächst erfreulicher Wert möglicherweise mit Vorsicht zu genießen, wie im Falle eines extrem hohen Lifts bei raren Kombinationen? Verliert man sich im Klein-Klein oder übersieht man vielleicht spannende Details?
+
+Die Assoziationsanalyse hat verdeutlicht, dass Buchgenres wichtige Daten zu sein scheinen, die dem ausgänglichen Datenset explizit leider fehlen. Wie die Untersuchung von Stephen King und die abschließende Visualisierung gezeigt hat, sind diese Daten jedoch implizit im Set verborgen und können mit den richtigen Methoden an die Oberfläche gebracht werden.
+
+Die zwei populärsten Genres scheinen Suspense/Horror auf der einen und Romance auf der anderen Seite zu sein. Wer sich den Klischees widersetzt und beide Genres mag, treibt den Lift in die Höhe, obwohl die tatsächliche Anzahl der Suspense/Romance-Fans vielleicht gar nicht so überwältigend ist. (Möglicherweise hätte hier doch ein höherer Support geholfen.)
+
+Wenn man sich den Apriori-Algorithmus als Basis einer kleinen Anwendung vorstellt, so würde sich sicherlich ein Mehrwert für den User generieren lassen, wenn es die Möglichkeit gäbe, einen spezifischen Autornamen in ein Feld einzugeben, welcher dann als LHS in den Algorithmus eingespeist wird, um im Resultat weitere Namen nach dem Schema "Wer den von Ihnen eingegebenen Autor x gelesen hat, der hat auch Autor y gelesen" zu erhalten.
