@@ -1,0 +1,406 @@
+---
+title: "Session 04 | 2021-05-08"
+output: html_notebook
+---
+
+#### 1. Einleitung
+
+Untersucht wird das [Titanic-Dataset](https://alby.link/titanic), welches die Daten der unglücklichen Passagiere der Titanic enthält. Ziel ist es, herauszufinden, ob sich auf Basis verschiedener Eigenschaften bzw. Features, wie z. B. Geschlecht oder Passagierklasse, maschinell vorhersagen lässt, ob eine Person zur Gruppe der Überlebenden zählt oder nicht. Da das (Nicht-)Überleben im Datenset enthalten ist, wird hier mit einer Form des Supervised Learning experimentiert, wobei der Maschine das (Nicht-)Überleben als Zielvariable vorgegeben wird, deren Parameter sie zu ergründen versucht.
+
+Anwendung finden die drei Klassifikations-Algorithmen Support Vector Machines (SVM), Naive Bayes (NB) und Decision Tree (DT). Die Performance der Algorithmen wird mithilfe von Confusion Matrices und ROC AUC gemessen und verglichen.
+
+#### 2. Datenset und Bibliotheken importieren
+
+Das Titanic-Datenset wird importiert:
+
+```{r}
+library(readr)
+titanic <- read_delim("titanic.csv", ";", 
+    escape_double = FALSE, trim_ws = TRUE)
+```
+
+Neben dem *tidyverse* werden fünf weitere Bibliotheken importiert: Während *e1071* die Algorithmen Support Vector Machines und Naive Bayes enthält, teilt *caret* die Daten in Trainings- und Testdaten ein und sorgt dabei für eine gleichmäßige Verteilung der Features. Mithilfe von *pRoc* lassen sich ROC-AUC-Kurven erstellen. *rpart* enthält den Decision-Tree-Algorithmus; *rpart.plot* sorgt für eine ansprechende Visualisierung des Baumes.
+
+```{r}
+library(tidyverse)
+library(e1071)
+library(caret)
+library(pROC)
+library(rpart)
+library(rpart.plot)
+```
+
+#### 3. Daten begutachten und aufbereiten
+
+Es ist an der Zeit, sich einen ersten Überblick über die Daten zu verschaffen:
+
+```{r}
+head(titanic)
+```
+
+Es wird überprüft, ob bei der Zielvariable *survived* eine Class Imbalance besteht:
+
+```{r}
+titanic %>%
+  group_by(survived) %>%
+  summarize(anzahl = n())
+```
+
+Mit 500 Überlebenden und 809 Opfern scheint das Verhältnis hinreichend ausgeglichen zu sein, sodass keine Class Imbalance vorliegt.
+
+#### 4. Features auswählen, zusammenstellen und vorbereiten
+
+Vor der Anwendung der Algorithmen werden alle NAs ausgespart werden. Damit die Datenmenge nicht zu gering wird, ist es daher vor der Auswahl der Features sinnvoll, zu prüfen, wie viele NAs die jeweiligen Variablen aufweisen:
+
+```{r}
+sapply(titanic, function(x) sum(is.na(x)))
+```
+
+Mit dieser Datenlage im Hinterkopf soll nun überlegt werden, welche Features hilfreich dafür sein könnten, das Überleben der Personen vorherzusagen. Intuitiv lässt sich vermuten, dass insbesondere die Passagierklasse und das Geschlecht das (Nicht-)Überleben beeinflussen.
+
+Mithilfe gruppierter Barplots lässt sich überprüfen, ob diese grobe Ahnung in die richtige Richtung geht:
+
+```{r}
+count <- table(titanic$survived, titanic$pclass)
+cols = c("forestgreen" , "royalblue")
+
+barplot(count,
+        col = cols,
+        beside = TRUE,
+        legend.text = c("verstorben", "überlebt"),
+        main = "Überleben nach Passagierklasse",
+        xlab = "Passagierklasse",
+        ylab = "Anzahl",
+        las = 1)
+```
+
+Während die meisten Passagiere der ersten Klasse überlebt haben, hat es in der dritten Klasse besonders viele Menschen dahingerafft.
+
+```{r}
+count <- table(titanic$survived, titanic$sex)
+cols = c("forestgreen" , "royalblue")
+
+barplot(count,
+        col = cols,
+        beside = TRUE,
+        legend.text = c("verstorben", "überlebt"),
+        main = "Überleben nach Geschlecht",
+        xlab = "Geschlecht",
+        ylab = "Anzahl",
+        las = 1)
+```
+
+Während ein Großteil der Frauen überlebt hat, hat lediglich ein Bruchteil der Männer das Unglück überstanden.
+
+Die Barplots zeigen, dass die Variablen *pclass* und *sex* in jedem Fall in die Analyse mit einbezogen werden sollten. Obwohl *age* einige NAs aufweist, lässt sich vermuten, dass auch hier interessante Unterschiede festzustellen sind, sodass auch dieses Feature aufgenommen wird.
+
+Während *boat* eine Proxy-Variable für *survived* zu sein scheint, lassen sich *fare* und *cabin* vielleicht als Proxys für *pclass* begreifen. Interessanter könnte sein, ob eine Person mit Familie reist oder nicht. Hierfür werden zunächst die Spalten *sibsp* (Sibling/Spouse) und *parch* (Parents/Children) 
+in einer neuen Variable *relatives* kombiniert:
+
+```{r}
+titanic$relatives <- titanic$sibsp + titanic$parch
+```
+
+Anschließend werden null Relatives weiterhin mit 0 codiert und alles über 0 mit einer 1, sodass sich zwischen Allein- und mit Familie Reisenden unterscheiden lässt:
+
+```{r}
+titanic <- titanic %>%
+  mutate(relatives = ifelse(relatives > 0, 1, 0))
+```
+
+Die Home Destination könnte ebenfalls von Interesse sein, birgt jedoch leider viele NAs. Vollständiger ausgefüllt ist die Spalte *embarked*, sodass sich prüfen lässt, ob in Cherbourg (Frankreich), Southampton (UK) oder Queenstown (Irland) eingestiegene Fahrgäste die besten Überlebenschancen hatten.
+
+In einem neuen Data Frame werden die relevanten Variablen zusammengestellt, wobei NAs ausgespart werden:
+
+```{r}
+titanic_algo <- titanic %>%
+  select(survived, pclass, sex, age, relatives, embarked) %>%
+  na.omit(titanic_algo)
+```
+
+Weil die *age*-Spalte als CHR importiert wurde, wird der Datentyp zu numerisch geändert. Um keine zusätzlichen NAs zu erzeugen, werden die Kommata dabei durch Punkte ersetzt:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(age = as.numeric(str_replace(age, ",", ".")))
+```
+
+Wirklich interessant ist das Alter eigentlich nur in Hinsicht auf die Frage, ob jemand ein Kind ist oder nicht. Indem erneut die *ifelse*-Bedingung verwendet wird, lässt sich festlegen, dass alle Altersangaben kleiner als 13 in *child* geändert werden sollen, während die anderen in *adult* umgewandelt werden:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(age = ifelse(age < 13, "child", "adult"))
+```
+
+Anschließend erhalten Kinder den Zahlencode 0, Erwachsene den Zahlencode 1:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(age = ifelse(age == "child", 0, 1))
+```
+
+Auf dieselbe Weise werden für die Variable *sex* Männer mit einer 0 codiert, Frauen mit einer 1:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(sex = ifelse(sex == "male", 0, 1))
+```
+
+Bei *embarked* erhält Cherbourg die 0, Southampton die 1 und Queenstown die 2:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = str_replace(embarked, "C", "0"))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = str_replace(embarked, "S", "1"))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = str_replace(embarked, "Q", "2"))
+```
+
+Nun wird der Datentyp der Spalte *embarked* zu numerisch konvertiert:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = as.numeric(embarked))
+```
+
+Dies ist jedoch nur ein Zwischenschritt: Obwohl die Datensätze jetzt nur noch Zahlen enthalten, handelt es sich bei diesen nicht um numerische Daten, sondern um den Algorithmen zuliebe erstellte Zahlencodes, die Kategorien repräsentieren, bei denen sich kein sinnvoller Abstand messen lässt. Dementsprechend erhalten alle Variablen den Datentyp *Factor*:
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(survived = as.factor(survived))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(pclass = as.factor(pclass))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(sex = as.factor(sex))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(age = as.factor(age))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(relatives = as.factor(relatives))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = as.factor(embarked))
+```
+
+Das schlussendliche Dataset für die Algorithmen sieht nun wie folgt aus:
+
+```{r}
+head(titanic_algo)
+```
+
+#### 5. Trainings- und Testdaten (Holdout)
+
+Bevor die Algorithmen an die Arbeit gehen, wird das Datenset zunächst mithilfe der Library *caret* in Trainings- und Testdaten aufgeteilt (Datenpartition). Anhand des Trainingssets lernt die Maschine (hoffentlich), gemäß welcher Parameter eine Person überlebt oder nicht. Mithilfe ihres Modells versucht die Maschine dann, Überlebensprognosen bei den Testdaten anzustellen.
+
+Nachdem für die Reproduzierbarkeit der Ergebnisse ein Seed gesetzt wurde, wird die Funktion *createDataPartition()* angewendet. Die y-Variable, die anhand der übrigen x-Variablen vorhergesagt werden soll, ist *survived*. Der Wert *.8* legt fest, dass 80% der Daten in das Trainingsset kommen. Um zu verhindern, dass das Ergebnis als großartige Liste ausgegeben wird, wird zudem *list* auf *FALSE* gesetzt:
+
+```{r}
+set.seed(1234)
+trainIndex <- createDataPartition(
+  y = titanic_algo$survived,
+  p = .8,
+  list = FALSE
+)
+```
+
+Durch die Variable *trainIndex* ist nun bekannt, wie viele Zeilen das Trainingsset enthalten soll, sodass dieses nun erstellt werden kann:
+
+```{r}
+train_data <- titanic_algo[trainIndex,]
+```
+
+Die übrigen 20% der Daten kommen ins Testset:
+
+```{r}
+test_data <- titanic_algo[-trainIndex,]
+```
+
+#### 6. Support Vector Machines (SVM)
+
+Während bei der linearen Regression versucht wurde, eine Linie mit dem geringstmöglichen Abstand zu den Datenpunkten zu ziehen, legen SVMs es auf einen möglichst großen Abstand an - nicht zwischen Datenpunkten, sondern zwischen den Hilfslinien, die auf beiden Seiten der trennenden Hauptlinie gezogen werden. Je größer der Abstand, desto besser lassen sich die Daten in klare Gruppen einteilen. Ziel ist es, die Anzahl der Fehler - d. h. der Datenpunkte, die sich in einer falschen Gruppe wiederfinden - so weit wie möglich zu reduzieren.
+
+Mithilfe der Library *e1071* wird das Modell erstellt, wobei Wahrscheinlichkeitsvorhersagen ermöglicht werden:
+
+```{r}
+model_svm <- svm(formula = survived ~ ., data = train_data, probability = TRUE)
+```
+
+Es wird eine Summary des Modells betrachtet:
+
+```{r}
+summary(model_svm)
+```
+
+Da es sich bei der Zielvariable um eine diskrete Variable (*survived / not survived*) handelt, wird der SVM-Typ C-Classification verwendet.
+
+Nun können anhand des Modells Vorhersagen für die Testdaten erstellt werden, wobei die erste Spalte herausgenommen wird:
+
+```{r}
+pred_svm <- predict(model_svm, test_data[,-1], probability = TRUE)
+```
+
+Die Funktion *cbind()* erlaubt es, die Vorhersagen und die tatsächlichen Testdaten gemeinsam zu betrachten:
+
+```{r}
+results_svm <- cbind(pred_svm, test_data)
+head(results_svm)
+```
+
+Um besser einzuschätzen können, wie gut das Modell ist, wird eine Confusion Matrix erstellt:
+
+```{r}
+confusionMatrix(pred_svm, test_data$survived)
+```
+
+Die Accuracy beträgt gerundet 80%. Insgesamt hat das Modell 42 Mal eine falsche Prognose aufgestellt: In 25 Fällen hat ein Totgeglaubter überlebt (Falsch-Positiv); in 17 Fällen sind Personen, die von der Maschine als lebendig eingestuft wurden, tatsächlich gestorben (Falsch-Negativ).
+
+Die Sensitivity beschreibt, in welchem Maße die True Positives - also die Verstorbenen - erkannt wurden, und beträgt hier 86%. Die Specificity beschreibt, in welchem Maße die True Negatives - also die Überlebenden - erkannt wurden, und beträgt 71%. Die Parameter des Sterbens sind für die Maschine also relativ deutlich zu erkennen - schwieriger ist es für sie, das Überleben vorherzusagen.
+
+Diese Werte lassen sich nun in Form einer ROC-Kurve visualisieren, wobei die Results einen numerischen Datentyp erhalten:
+
+```{r}
+roc_svm <- roc(as.numeric(results_svm$survived), as.numeric(results_svm$pred_svm),
+                smoothed = TRUE, ci = TRUE, ci.alpha = 0.9,
+                stratified = FALSE, plot = TRUE,
+                auc.polygon = TRUE, max.auc.polygon = TRUE,
+                grid = TRUE, print.auc = TRUE, 
+                show.thres = TRUE)
+```
+
+Ziel ist es gewissermaßen, mit dem Knick möglichst weit in die linke obere Ecke zu gelangen: Je größer die Area Under The Curve (AUC), desto besser. Der hier vorliegende AUC-Wert von 0.784 ist ziemlich gut - vielleicht nicht phänomenal, doch in jedem Fall sind die Prognosen weit besser, als wenn sie nur auf Zufall (0.5) basieren würden.
+
+#### 7. Naive Bayes
+
+Der Naive-Bayes-Algorithmus überlegt, wie wahrscheinlich A ist, wenn B auftritt, und geht dabei davon aus, dass alle Features, die man ihm gibt, unabhängig voneinander sind.
+
+Im ersten Schritt wird berechnet, wie hoch die Überlebenswahrscheinlichkeit der einzelnen Variablen ist, also z. B. eines Mannes, eines Kindes usw. Anschließend werden die Wahrscheinlichkeiten der Variablen kombiniert, um auf dieser Basis eine Prognose für das (Nicht-)Überleben einzelner Passagiere treffen zu können. Verändert sich die Datenlage, so verändert sich auch das Modell.
+
+Erneut wird mithilfe der Library *e1071* das Modell erstellt:
+
+```{r}
+model_nb <- naiveBayes(formula = survived ~ ., data = train_data)
+```
+
+Nun können Prognosen getroffen werden:
+
+```{r}
+pred_nb <- predict(model_nb, test_data, probability = TRUE)
+```
+
+Vorhersagen und Testdaten werden gemeinsam betrachtet:
+
+```{r}
+results_nb <- cbind(pred_nb, test_data)
+head(results_nb)
+```
+
+Der Head ist nicht sonderlich vielversprechend, doch mit einer Confusion Matrix lässt sich die Lage besser einschätzen:
+
+```{r}
+confusionMatrix(pred_nb, test_data$survived)
+```
+
+Die Accuracy beträgt gerundet 82% und fällt damit schon einmal höher aus als bei den SVM. Eine falsche Prognose aufgestellt hat das Modell insgesamt 38 Mal mit 20 False-Positives und 18 False-Negatives.
+
+Während die Sensitivity bei 85% liegt und damit etwas schlechter ausfällt als bei den SVM, beträgt die Specificity bessere 76%. Erneut ist es für die Maschine leichter, den Tod vorherzusagen.
+
+Die Werte werden als ROC-Kurve betrachtet:
+
+```{r}
+roc_nb <- roc(as.numeric(results_nb$survived), as.numeric(results_nb$pred),
+                smoothed = TRUE, ci = TRUE, ci.alpha = 0.9,
+                stratified = FALSE, plot = TRUE,
+                auc.polygon = TRUE, max.auc.polygon = TRUE,
+                grid = TRUE, print.auc = TRUE, 
+                show.thres = TRUE)
+```
+
+Mit einem AUC-Wert von 0.809 hat das Modell einen sehr guten Wert von über acht erreicht und schneidet dementsprechend besser ab als die SVM.
+
+#### 8. Decision Tree
+
+Der letzte Algorithmus, der angewendet wird, ist der intuitiv gut zu lesende Decision Tree, welcher gewissermaßen die Trennungsweiten zwischen den Features misst und anschließend absteigend anordnet. Je größer die Trennungsweite, desto ausschlaggebender ist die Variable für das (Nicht-)Überleben.
+
+Da ein Klassifikationsbaum entstehen soll, wird bei der Erstellung des Modells die Methode *class* gewählt:
+
+```{r}
+model_dt <- rpart(formula = survived ~ ., data = train_data, method = "class")
+```
+
+Nun kann der Baum grafisch geplottet werden:
+
+```{r}
+rpart.plot(model_dt)
+```
+
+Die Baumwurzel (Root Node) zeigt, dass insgesamt 41% der Fahrgäste überlebt haben. 64% der Passagiere sind Männer mit einer Überlebensrate von 21% - Frauen hingegen weisen eine Überlebensrate von stattlichen 75% auf. Der wichtigste Faktor für die Frage, ob man überlebt oder nicht, ist also eindeutig das Geschlecht: Frauen haben einfach die besseren Karten.
+
+Der zweitwichtigste Faktor für Männer ist das Alter: Kinder haben eine deutlich bessere Überlebensrate von 52%. Für Frauen ist der zweitwichtigste Faktor die Passagierklasse: Betuchte Damen weisen eine Überlebensrate von 94% auf, ihre plebejischen Genossinnen in der dritten Klasse lediglich 48%. Etwas erstaunlich ist, dass laut des Modells in der dritten Klasse reisende Frauen, die in Cherbourg eingestiegen sind, mit 78% deutlich bessere Chancen haben sollen als jene, die in den anderen Häfen hinzukamen. Gänzlich irrelevant scheint jedoch zu sein, ob man mit Familie reist oder nicht.
+
+Beim Aufstellen der Prognosen wird der Type *class* spezifiziert, um die Klasse *survived* des Testsets vorhersagen zu können:
+
+```{r}
+pred_dt <- predict(model_dt, test_data[,-1], type = "class")
+```
+
+Die Vorhersagen werden gemeinsam mit den Testdaten betrachtet:
+
+```{r}
+results_dt <- cbind(pred_dt, test_data)
+head(results_dt)
+```
+
+Es wird eine Confusion Matrix erstellt:
+
+```{r}
+confusionMatrix(pred_dt, test_data$survived)
+```
+
+Die Accuracy beträgt 81% - geringfügig besser als SVM (80%), geringfügig schlechter als Naive Bayes (82%). Eine falsche Prognose aufgestellt hat das Modell insgesamt 40 Mal mit 25 False-Positives und 15 False-Negatives. 
+
+Die Sensitivity liegt bei 88%, die Specificity bei 71%.
+
+Die Werte werden als ROC-Kurve betrachtet:
+
+```{r}
+roc_dt <- roc(as.numeric(results_dt$survived), as.numeric(results_dt$pred),
+                smoothed = TRUE, ci = TRUE, ci.alpha = 0.9,
+                stratified = FALSE, plot = TRUE,
+                auc.polygon = TRUE, max.auc.polygon = TRUE,
+                grid = TRUE, print.auc = TRUE, 
+                show.thres = TRUE)
+```
+
+Mit einem AUC-Wert von 0.792 reicht das Modell nicht ganz an Naive Bayes heran, schneidet jedoch geringfügig besser ab als SVM.
+
+#### 9. Fazit
+
+Um die Performance der drei Algorithmen auf einen Blick vergleichen zu können, werden fünf kleine Vektoren mit allen entscheidenden Werten erstellt und in einem Data Frame kombiniert:
+
+```{r}
+algo <- c("svm", "nb", "dt")
+acc <- c(80, 82, 81)
+sen <- c(86, 85, 88)
+spe <- c(71, 76, 71)
+auc <- c(0.784, 0.809, 0.792)
+(performance <- data.frame(algo, acc, sen, spe, auc))
+```
+
+Offengestanden drängen sich keine dramatischen Unterschiede zwischen den Algorithmen auf - insbesondere SVM und DT scheinen sich sehr ähnlich zu sein, wobei DT insgesamt geringfügig besser abschneidet. Es lässt sich jedoch feststellen, dass NB als einziger einen AUC-Wert von über acht erreicht und dementsprechend die besten Prognosen trifft.
+
+Interessanterweise ist die Sensitivity bei NB am schlechtesten - dafür ist die Specificity deutlich besser als die der anderen Algorithmen, was bedeutet, dass NB besser darin ist, True Negatives - also die Überlebenden - zu erkennen, was vermutlich ausschlaggebend für die bessere Performance ist.
+
+Was NB ebenfalls von den anderen Algorithmen unterscheidet, ist, dass es sich hierbei um ein Generative Model handelt, welches die Wahrscheinlichkeiten der einzelnen Features am Ende zusammenführt. Bei SVM und DT als Discriminative Models hingegen findet eine derartige Zusammenführung wohl nicht statt. Es lässt sich vermuten, dass sie deshalb anfälliger dafür sind, sich z. B. von Ausreißern verwirren zu lassen und Muster zu erkennen, die gar nicht da oder irrelevant sind - insbesondere in einem kleinen Datenset wie dem Titanic-Set.
