@@ -1,0 +1,325 @@
+---
+title: "Session 05 | 2021-05-15"
+output: html_notebook
+---
+
+#### 1. Einleitung
+
+Untersucht wird das [Book-Crossing Dataset](http://www2.informatik.uni-freiburg.de/~cziegler/BX/) mit 200.000+ Büchern und deren von verschiedenen Usern verfassten Bewertungen.
+
+Um die Ergebnisse dieses Notebooks reproduzieren zu können, müssen zunächst die drei auf der Website zum Download bereitgestellten CSV-Dateien heruntergeladen werden. Anschließend muss das Notebook *bookcrossing-csv* durchlaufen werden, welches ebenfalls im Repositorium *data-science* liegt. Die so entstandene CSV-Datei *bookcrossing* muss im Working Directory abgelegt werden.
+
+Untersucht werden soll, ob sich die Leser anhand der Bücher, die sie bewertet haben, in Cluster einsortieren lassen. Das Datenset ist so umfassend, dass es für menschliche Betrachter schnell unübersichtlich wird - es fällt schwer, auf den ersten (oder auch zweiten) Blick Muster in den Daten zu erkennen.
+
+Um also herauszufinden, ob sich aus den Daten bestimmte Lesergruppen extrahieren lassen, die man als Buchhändler oder Bibliothekar gezielt ansprechen könnte, sollen mit den Clustering-Algorithmen Hierarchisches Clustering und K-Means zwei Formen des Unsupervised Learning Anwendung finden. Im Gegensatz zum Supervised Learning wird der Maschine hierbei keine Zielvariable vorgegeben, da man ja tatsächlich nicht weiß, wonach man konkret sucht.
+
+#### 2. Datenset und Bibliotheken importieren
+
+Zunächst wird das Datenset *bookcrossing* importiert, wobei *encoding* aus Gründen der späteren Darstellung/Verarbeitung von Sonderzeichen wie � auf *latin1* gesetzt wird:
+
+```{r}
+library(readr)
+bookcrossing <- read_csv("bookcrossing.csv", 
+    locale = locale(encoding = "latin1"))
+```
+
+Anschließend werden alle erforderlichen Libraries geladen. Neben dem *tidyverse* zählen hierzu *cluster* für das Clustering und *caret*, welche die Daten für die Algorithmen vorbereitet.
+
+```{r}
+library(tidyverse)
+library(cluster)
+library(caret)
+```
+
+#### 3. Daten vorbereiten
+
+Leider können die Algorithmen nicht ohne Weiteres auf das Datenset losgelassen werden. Vorher sind folgende Aspekte zu bedenken:
+
+* Ein bescheidener Laptop hat seine Grenzen, weshalb lediglich 100 Datensätze in das Clustering einbezogen werden.
+* Das Datenset enthält viele kategorische Variablen, bei denen sich kein sinnvoller Abstand messen lässt. Damit die Algorithmen mit diesen umgehen können, müssen sie in zahlencodierte Dummy-Variablen umgewandelt werden, bei denen jede Kategorie ihre eigene Spalte erhält. Um nicht in die "Dummy Variable Trap" zu stolpern und es dem Algorithmus allzu leicht zu machen, wird eine Spalte weniger benötigt, als man Kategorien hat.
+* Numerische Variablen sollten auf eine einheitliche Skala standardisiert werden, um zu verhindern, dass bei größeren Distanzen eine Variable das Ergebnis dominiert.
+
+##### 3.1 Daten auswählen
+
+Leider kann nur eine vergleichsweise geringe Anzahl an Datensätzen in das Clustering einbezogen werden. Die erste Frage, die sich stellt, ist daher, welche Daten ausgewählt werden.
+
+Vorhergehende Sessions haben bereits gezeigt, dass nicht alle Datensätze in dem Set gleichermaßen interessant sind. Nach dem Vorbild von Session 3 (Market Basket Analysis), in dessen Notebook die Überlegungen zur Qualitätskontrolle und der nachfolgende Code genauer nachzuvollziehen sind, wird daher zunächst ein Data Frame erstellt, welches zum einen nur Autoren enthält, die mindestens zwei Bewertungen erhalten haben und deren Bewertungspunktzahl mindestens einen Mittelwert von acht hat. Zum anderen werden nur User einbezogen, die mindestens zwei Bewertungen verfasst haben:
+
+```{r}
+anzahl_ratings_p_author <- bookcrossing %>%
+  filter(!is.na(rating)) %>%
+  group_by(author) %>%
+  summarize(anzahl_rpa = n()) %>%
+  arrange(desc(anzahl_rpa))
+
+bookcrossing <- bookcrossing %>%
+  left_join(anzahl_ratings_p_author)
+
+median_author_ratings <- bookcrossing %>%
+  filter(!is.na(rating)) %>%
+  group_by(author) %>%
+  summarize(median_ar = median(rating)) %>%
+  arrange(desc(median_ar))
+
+bookcrossing <- bookcrossing %>%
+  left_join(median_author_ratings)
+
+anzahl_ratings_p_user <- bookcrossing %>%
+  group_by(user_id) %>%
+  summarize(anzahl_rpu = n()) %>%
+  arrange(desc(anzahl_rpu))
+
+bookcrossing <- bookcrossing %>%
+  left_join(anzahl_ratings_p_user)
+
+book_cluster <- bookcrossing %>%
+  filter(anzahl_rpa >= 2 & median_ar >= 8 & anzahl_rpu >= 2)
+```
+
+Das entstandene Data Frame *book_cluster* enthält jetzt nur noch populäre Autoren und engagierte Leser. Um weiter auszusieben und sicherzustellen, dass die Maschine möglichst viele Daten erhält, werden nun alle Reihen entfernt, die NAs enthalten:
+
+```{r}
+book_cluster <- book_cluster %>%
+  na.omit(book_cluster)
+```
+
+Vielleicht wäre es wünschenswert, dass in dem Sample nicht zu wenige Bücher enthalten sind. Gleichzeitig sollten vielleicht zu jedem Titel mehrere Leser erfasst werden, sodass die Maschine überhaupt die Chance hat, Muster zu erkennen.
+
+Hierfür wird zunächst untersucht, wie viele Bewertungen die jeweiligen Bücher erhalten haben:
+
+```{r}
+anzahl_ratings_p_title <- book_cluster %>%
+  group_by(title) %>%
+  summarize(anzahl_rpt = n()) %>%
+  arrange(desc(anzahl_rpt))
+```
+
+Die Spalte wird dem Data Frame *book_cluster* hinzugefügt:
+
+```{r}
+book_cluster <- book_cluster %>%
+  left_join(anzahl_ratings_p_title)
+```
+
+Es wird etwas arbiträr festgelegt, dass ein Titel mehr als zwei und weniger als sechs Bewertungen erhalten haben sollte:
+
+```{r}
+book_cluster <- book_cluster %>%
+  filter(anzahl_rpt > 2 & anzahl_rpt < 6)
+```
+
+Die ersten 100 Datensätze werden extrahiert:
+
+```{r}
+book_cluster <- book_cluster %>%
+  slice(1:100)
+```
+
+Uninteressante Spalten werden entfernt:
+
+```{r}
+book_cluster <- book_cluster %>%
+  select(-"isbn", -"anzahl_rpa", -"median_ar", -"anzahl_rpu", -"anzahl_rpt")
+```
+
+Die ausgewählten Daten sehen nun wie folgt aus:
+
+```{r}
+head(book_cluster)
+```
+
+##### 3.2 Datentypen und Dummys
+
+Als kategoriale Daten erhalten die Variablen *title*, *author*, *publisher*, *user_id* und *location* den Datentyp *Factor*:
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(title = as.factor(title))
+```
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(author = as.factor(author))
+```
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(publisher = as.factor(publisher))
+```
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(user_id = as.factor(user_id))
+```
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(location = as.factor(location))
+```
+
+Nun können mithilfe der Funktion *dummyVars()* die Dummy-Variablen erstellt werden. Indem der *fullRank*-Parameter auf *TRUE* gesetzt wird, lässt sich sicherstellen, dass eine Spalte weniger erstellt wird, als Kategorien vorhanden sind:
+
+```{r}
+dmy <- dummyVars(" ~ .", data = book_cluster, fullRank = TRUE)
+```
+
+Die neuen Variablen werden in dem neuen Data Frame *book_dummy* gespeichert:
+
+```{r}
+book_dummy <- data.frame(predict(dmy, newdata = book_cluster))
+```
+
+Nun umfasst das Datenset stolze 190 Spalten:
+
+```{r}
+head(book_dummy)
+```
+
+##### 3.3 Standardisierung
+
+Um die numerischen Variablen *year*, *rating* und *age* vergleichbar zu machen und zu verhindern, dass eine Variable das Ergebnis dominiert, ist es vonnöten, die Daten zu standardisieren. Dies gelingt mit der Funktion *scale()*, die die Variablen dahingehend transformiert, dass sie ein Mean von Null und eine Standardabweichung von Eins erhalten:
+
+```{r}
+book_dummy <- book_dummy %>%
+  mutate(year = scale(year))
+```
+
+```{r}
+book_dummy <- book_dummy %>%
+  mutate(rating = scale(rating))
+```
+
+```{r}
+book_dummy <- book_dummy %>%
+  mutate(age = scale(age))
+```
+
+#### 4. Hierarchisches Clustering
+
+Es gibt zwei Arten des Hierarchischen Clusterings: Beim ersten Ansatz wird jeder Datenpunkt zunächst als sein eigenes Cluster angesehen und dann mit anderen kombiniert (agglomerative/Bottom-Up), beim zweiten Ansatz werden alle Daten eingehend in einem riesigen Cluster vereint, welches dann auseinandergebrochen wird (divisive/Top-Down). In diesem Fall wird agglomeratives Clustering eingesetzt, sodass immer die sich am nächsten stehenden Punkte bzw. Cluster miteinander verbunden werden, bis entweder ein einziges Riesencluster entsteht oder sinnvollerweise ein Schnitt gesetzt, d. h. eine Entscheidung getroffen wird, wann die Cluster zu groß werden.
+
+Die Grundlage des Hierarchischen Clusterings ist das Erstellen einer Dissimilarity Matrix oder auch Distanzmatrix. Diese Matrix drückt aus, wie groß die Unterschiede zwischen den Datenpunkten sind. Nachdem die Daten in Abs. 3 entsprechend vorbereitet wurden, können diese Unterschiede nun in vergleichbaren Zahlen ausgedrückt werden, indem die sogenannte Euklidische Distanz zwischen den Werten errechnet wird. Auf diese Weise können Werte, die nahe beieinander liegen, später in einem Cluster vereint werden.
+
+Die Distanzmatrix wird mit der Funktion *dist()* erstellt:
+
+```{r}
+dist_matrix <- dist(book_dummy, method = "euclidean")
+```
+
+Nun wird das Clustering durchgeführt, indem die Funktion *hclust()* mit der Methode *complete* (Farthest Neighbor Clustering) verwendet wird, nachdem für die Reproduzierbarkeit der Ergebnisse ein Seed gesetzt wurde:
+
+```{r}
+set.seed(123)
+hc <- hclust(dist_matrix, method = "complete" )
+```
+
+Die gefundenen Cluster lassen sich in Form eines Dendrogramms visualisieren:
+
+```{r}
+plot(hc)
+```
+
+Die "Gabelzinken" П verbinden zwei Datenpunkte, die sich naheliegen, wobei die Höhe des "Gabelstiels" die Distanz zwischen den beiden Punkten repräsentiert. Je weiter das Dendrogramm in die Höhe wächst, desto größer werden die Distanzen. Indem die Gabel mit weiteren Gabeln verbunden wird, entstehen immer größere Cluster.
+
+An dieser Stelle wird es Zeit, als Mensch in das Geschehen einzuschreiten und festzulegen, welche Distanz zu groß ist und in wie viele Cluster die Daten eingeteilt werden sollten. Beim Wählen von k hilft das Erstellen eines sogenannten Elbow-Diagramms.
+
+Bei der Elbow-Methode wird der Durchmesser des größten Clusters gemessen, also die größte Distanz zwischen zwei Datenpunkten desselben Clusters bzw. die "Within-clusters sum of squares". Diese Distanz wird durch die y-Achse repräsentiert, während die x-Achse die Anzahl an Clustern (k) von k = 2 bis k = 15 anzeigt:
+
+```{r}
+set.seed(60)
+elbow <- (nrow(book_dummy)-1) * sum(apply(book_dummy, 2, var))
+  for (i in 2:15) elbow[i] <- sum(kmeans(book_dummy, centers = i)$withinss)
+
+plot(1:15, elbow, type = "b", xlab = "Number of clusters (k)", ylab = "Within-clusters sum of squares")
+```
+
+Idealerweise kristallisiert sich ein Knick heraus, nach dem das weitere Splitten der Daten den Durchmesser nur noch geringfügig verändert. Tatsächlich ist der vorliegende Knick leider nicht ganz so ellbogenhaft, wie man ihn sich wünschen würde, lässt sich aber vielleicht etwa bei k = 4 erahnen. Durch eine farbliche Hervorhebung lassen sich die vier Cluster im Dendrogramm markieren:
+
+```{r}
+plot(hc)
+rect.hclust(hc, k = 4, border = 2:5)
+```
+
+Mithilfe der Funktion *cutree()* lässt sich die Gruppenzugehörigkeit der Datenpunkte extrahieren:
+
+```{r}
+set.seed(50)
+cut4 <- cutree(hc, k = 4)
+```
+
+Wie viele Datenpunkte sind in jeder Gruppe?
+
+```{r}
+table(cut4)
+```
+
+Sonderlich ausgewogen ist die Verteilung der Datenpunkte leider nicht. Trotzdem werden die Ergebnisse dem ursprünglichen Datenset *book_cluster* hinzugefügt:
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(hc = cut4)
+```
+
+#### 6. K-Means
+
+Wie beim Hierarchischen Clustering, verlangt auch der K-Means-Algorithmus danach, dass ein Mensch die Anzahl an Clustern vorgibt. Orientiert am obigen Elbow-Diagramm, soll auch K-Means sich nun daran versuchen, vier Cluster zu erstellen.
+
+Das Vorgehen der Maschine ist dabei etwas anders: Zunächst werden willkürlich vier Punkte ausgewählt, welchen dann wiederum jene Punkte zugeordnet werden, die ihnen am nächsten liegen (Cluster Assignment), sodass vier (noch nicht sonderlich ideale) Cluster entstehen. Im nächsten Schritt werden die Mittelpunkte (Centroids) der Cluster neu berechnet (Centroid Update) und erneut jeder Datenpunkt jenem Centroid zugeordnet, das ihm am nächsten liegt. Dieser Vorgang des Nachjustierens des Zentrums und erneuten Zuordnens der Datenpunkte wird so lange wiederholt, bis sich keine Änderungen mehr ergeben (Convergence).
+
+Die Funktion *kmeans()* setzt den Algorithmus in Gang. Es wird festgelegt, dass vier Centroids gesetzt werden sollen. Da *nstart* auf 20 gesetzt wird, wird die Maschine 20 Mal versuchen, willkürliche Centroids zu setzen, und sich schlussendlich für die besten entscheiden:
+
+```{r}
+set.seed(123)
+km <- kmeans(book_dummy, centers = 4, nstart = 20)
+```
+
+Der folgende Output gibt erste Hinweise auf die Ergebnisse:
+
+```{r}
+str(km)
+```
+
+Wie sich an *size* ablesen lässt, sind wie gewünscht vier Cluster entstanden, denen jeweils 38, 25, 15 und 22 Datenpunkte zugeordnet wurden. Direkt wird erkennbar, dass die Aufteilung der Punkte auf die Cluster ausgewogener ist als beim Hierarchischen Clustering.
+
+Diese Ergebnisse werden dem ursprünglichen Data Frame *book_cluster* hinzugefügt:
+
+```{r}
+book_cluster <- book_cluster %>%
+  mutate(km = km$cluster)
+```
+
+Die Schwierigkeit beim Plotten der Ergebnisse in einem Koordinatensystem ist, dass das vorliegende Data Frame viele Variablen und dementsprechend auch viele Dimensionen aufweist, die für einen Plot auf zwei Dimensionen heruntergebrochen werden müssen (Dimensionality Reduction). Dies gelingt mithilfe von Principal Component Analysis (PCA), einem Algorithmus, welcher zwei neue Variablen (Component 1 und Component 2) hervorbringt, die gewissermaßen Projektionen der ursprünglichen Daten darstellen und in einem Koordinatensystem geplotten werden können.
+
+Um den zweidimensionalen Plot zu erstellen, wird die Funktion *clusplot()* der *cluster*-Library verwendet. Beachtet werden muss dabei, dass *clusplot()* als Default für die PCA die Funktion *princomp()* verwendet, welche nicht mit Data Frames umgehen kann, die mehr Spalten als Reihen aufweisen. Weil das Data Frame *book_dummy* leider ebenso gestrickt ist, muss stattdessen die Funktion *prcomp()* verwendet werden.
+
+Zunächst wird *book_dummy* als *prcomp*-Objekt gespeichert:
+
+```{r}
+pr_dummy <- prcomp(book_dummy)
+```
+
+Das Objekt wird betrachtet, um herauszufinden, wo die gewünschten Daten versteckt sind:
+
+```{r}
+str(pr_dummy)
+```
+
+Die Principal Components sind in der Variable *x* gespeichert, die dementsprechend gemeinsam mit der *cluster*-Variable des *km*-Objekts für den *clusplot* verwendet wird:
+
+```{r}
+clusplot(pr_dummy$x, km$cluster, color = TRUE, shade = TRUE, labels = 4, lines = 0, main = "K-Means Cluster Plot")
+```
+
+Das Ergebnis ist ernüchternd: Gemeinsam können die Components gerade einmal 3 % der Variabilität zwischen den Datenpunkten erklären - also so gut wie gar nichts.
+
+#### 7. Fazit
+
+Offengestanden hat keiner der beiden Algorithmen großartige Ergebnisse erzielt: Das Hierarchische Clustering hat sehr unausgewogene Gruppen erstellt; zudem ist nicht wirklich klar ersichtlich, nach welchen Kriterien diese Gruppen ausgewählt wurden. Höchstens ließe sich für Gruppe 2 spekulieren, dass hier möglicherweise das Alter ausschlaggebend gewesen sein könnte, da die User in dem Cluster allesamt ziemlich jung sind.
+
+Die von K-Means erstellten Gruppen überlappen sich stark und der geringe Erklärungsanteil verdeutlicht, dass die Cluster wenig sinnvoll gelegt wurden.
+
+Auch das Elbow-Diagramm hat bereits auf diese Enttäuschung vorbereitet, da ein "Ellbogen" wirklich nur mit sehr viel gutem Willen zu erkennen ist - ein Hinweis darauf, dass vielleicht einfach keine Muster in den Daten existieren, die gefunden werden könnten.
+
+Es ist nicht ausgeschlossen, dass auch die 100 Datensätze eingangs unglücklich ausgewählt wurden. Möglicherweise wären bei weniger Buchtiteln sinnvollere Cluster gefunden worden oder es wäre andersherum klüger gewesen, ein gänzlich zufälliges Sample zu erstellen. Vielleicht hätten noch weitere Spalten weggelassen werden können.
+
+Zumindest die ausgewählten Daten scheinen sich jedoch nicht sinnvoll clustern zu lassen.
