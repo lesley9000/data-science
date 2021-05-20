@@ -221,19 +221,19 @@ plot(hc)
 
 Die "Gabelzinken" П verbinden zwei Datenpunkte, die sich naheliegen, wobei die Höhe des "Gabelstiels" die Distanz zwischen den beiden Punkten repräsentiert. Je weiter das Dendrogramm in die Höhe wächst, desto größer werden die Distanzen. Indem die Gabel mit weiteren Gabeln verbunden wird, entstehen immer größere Cluster.
 
-An dieser Stelle wird es Zeit, als Mensch in das Geschehen einzuschreiten und festzulegen, welche Distanz zu groß ist und in wie viele Cluster die Daten eingeteilt werden sollten. Beim Wählen von k hilft das Erstellen eines sogenannten Elbow-Diagramms.
-
-Bei der Elbow-Methode wird der Durchmesser des größten Clusters gemessen, also die größte Distanz zwischen zwei Datenpunkten desselben Clusters bzw. die "Within-clusters sum of squares". Diese Distanz wird durch die y-Achse repräsentiert, während die x-Achse die Anzahl an Clustern (k) von k = 2 bis k = 15 anzeigt:
+An dieser Stelle wird es Zeit, als Mensch in das Geschehen einzuschreiten und festzulegen, welche Distanz zu groß ist und in wie viele Cluster die Daten eingeteilt werden sollten. Beim Wählen von k hilft das Erstellen eines sogenannten Elbow-Diagramms bzw. Scree Plots:
 
 ```{r}
 set.seed(60)
 elbow <- (nrow(book_dummy)-1) * sum(apply(book_dummy, 2, var))
   for (i in 2:15) elbow[i] <- sum(kmeans(book_dummy, centers = i)$withinss)
 
-plot(1:15, elbow, type = "b", xlab = "Number of clusters (k)", ylab = "Within-clusters sum of squares")
+plot(1:15, elbow, type = "b", xlab = "Number of clusters (k)", ylab = "Within groups sum of squares")
 ```
 
-Idealerweise kristallisiert sich ein Knick heraus, nach dem das weitere Splitten der Daten den Durchmesser nur noch geringfügig verändert. Tatsächlich ist der vorliegende Knick leider nicht ganz so ellbogenhaft, wie man ihn sich wünschen würde, lässt sich aber vielleicht etwa bei k = 4 erahnen. Durch eine farbliche Hervorhebung lassen sich die vier Cluster im Dendrogramm markieren:
+Der Scree Plot visualisiert, dass die Varianz innerhalb der Cluster ("Within groups sum of squares") abnimmt, wenn die Anzahl der Cluster (k) zunimmt. Idealerweise kristallisiert sich ein "Ellbogen" bzw. Knick heraus, nach dem das weitere Splitten der Daten die Varianz nur noch geringfügig verändert.
+
+Tatsächlich ist der vorliegende Knick leider nicht ganz so ellbogenhaft, wie man ihn sich wünschen würde, lässt sich aber vielleicht etwa bei k = 4 erahnen. Durch eine farbliche Hervorhebung lassen sich die vier Cluster im Dendrogramm markieren:
 
 ```{r}
 plot(hc)
