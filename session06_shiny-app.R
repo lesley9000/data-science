@@ -18,10 +18,10 @@ model_dt <- readRDS("titanic_dt.rds")
 ui <- tagList(
   
   # Navbar Page
-  navbarPage(title = "Titanic-Orakel",               # App-Name
+  navbarPage(title = "Titanic-Orakel",                 # App-Name
              header = HTML("<meta charset = 'utf-8'"), # UTF-8
-             theme = shinytheme("cerulean"),         # maritimes Theme
-             fluid = TRUE,                           # fluidPage
+             theme = shinytheme("cerulean"),           # maritimes Theme
+             fluid = TRUE,                             # fluidPage
              
              # 1. Tab mit Schiff-Icon
              tabPanel("Prognose", icon = icon("ship"),
@@ -104,7 +104,7 @@ ui <- tagList(
                               
                               <h4>Welche Faktoren beeinflussen das Ergebnis?</h4>
                               <p style = 'margin-bottom: 20px;'>
-                                Sofern das Formular ausgefüllt wurde, erscheint an dieser Stelle ein Entscheidungsbaum, der Aufschluss darüber gibt, welche Parameter besonders großen Einfluss auf das Ergebnis haben.
+                                Folgender Entscheidungsbaum gibt Aufschluss darüber, welche Parameter besonders großen Einfluss auf das Ergebnis haben:
                               </p>
                             "),
                         
@@ -118,13 +118,12 @@ ui <- tagList(
   ), # Ende Navbar Page
   
   # Footer
-  tags$footer("© 2021. All Rights Reserved.", style = "
+  tags$footer(HTML("<a href = 'https://github.com/lesley9000/data-science' style = 'color: #555555;'>lesley9000@github.com</a>"), style = "
               text-align: center;
               width: 100%;
               height: 50px;
               margin-top: 25px;
               font-size: 10px;
-              color: #555555;
               padding: 18px;
               background-color: #F5F5F5;")
   
@@ -154,12 +153,12 @@ server <- function(input, output, session) {
     output$value1 <- renderTable(my_result %>%
                                    rename("p(überlebt)" = X1, "p(verstorben)" = X0))
     
-    # Decision Tree generieren
-    output$value2 <- renderPlot({
-      rpart.plot(model_dt, roundint = FALSE)
-    })
-    
   }) # Ende observeEvent
+  
+  # Decision Tree generieren
+  output$value2 <- renderPlot({
+    rpart.plot(model_dt, roundint = FALSE)
+  })
   
 } # Ende Server-Logik
 
