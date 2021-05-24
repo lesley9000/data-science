@@ -1,0 +1,155 @@
+---
+title: "Session 06 | 2021-05-22 - Shiny Models"
+output: html_notebook
+---
+
+#### 1. Einleitung
+
+In diesem Notebook werden die Modelle *model_svm* und *model_dt* erstellt, die in der Shiny-App *Titanic-Orakel* Verwendung finden.
+
+Genaue Erläuterungen des Vorgehens sind im Notebook von Session 04 zu finden.
+
+#### 2. [Daten](https://alby.link/titanic) importieren
+
+```{r}
+library(readr)
+titanic <- read_delim("titanic.csv", ";", 
+    escape_double = FALSE, trim_ws = TRUE)
+```
+
+#### 3. Bibliotheken laden
+
+```{r}
+library(tidyverse)
+library(e1071)
+library(caret)
+library(rpart)
+```
+
+#### 4. Support Vector Machines (SVM)
+
+##### 4.1 Daten aufbereiten
+
+```{r}
+titanic$relatives <- titanic$sibsp + titanic$parch
+```
+
+```{r}
+titanic <- titanic %>%
+  mutate(relatives = ifelse(relatives > 0, 1, 0))
+```
+
+```{r}
+titanic_algo <- titanic %>%
+  select(survived, pclass, sex, age, relatives, embarked) %>%
+  na.omit(titanic_algo)
+```
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(age = as.numeric(str_replace(age, ",", ".")))
+```
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(sex = ifelse(sex == "male", 0, 1))
+```
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = str_replace(embarked, "C", "0"))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = str_replace(embarked, "S", "1"))
+```
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = str_replace(embarked, "Q", "2"))
+```
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(embarked = as.numeric(embarked))
+```
+
+```{r}
+titanic_algo <- titanic_algo %>%
+  mutate(survived = as.factor(survived))
+```
+
+Um zu verhindern, dass der Input der App-User faktorisiert werden muss und in diesem Zuge unbrauchbare Factors mit einem Level entstehen, werden die übrigen Variablen dieses Mal nicht faktorisiert.
+
+##### 4.2 Trainings- und Testdaten (Holdout):
+
+```{r}
+set.seed(1234)
+trainIndex <- createDataPartition(
+  y = titanic_algo$survived,
+  p = .8,
+  list = FALSE
+)
+```
+
+```{r}
+train_data <- titanic_algo[trainIndex,]
+```
+
+```{r}
+test_data <- titanic_algo[-trainIndex,]
+```
+
+##### 4.3 Modell
+
+Modell erstellen:
+
+```{r}
+set.seed(1234)
+model_svm <- svm(formula = survived ~ ., data = train_data, probability = TRUE)
+```
+
+Modell speichern:
+
+```{r}
+saveRDS(model_svm, "./titanic_svm.rds")
+```
+
+#### 5. Decision Tree
+
+##### 5.1 Daten anpassen
+
+Für eine klarere Anzeige werden alle Variablen (mit Ausnahme von *age*) faktorisiert:
+
+```{r}
+titanic_algo_dt <- titanic_algo %>%
+  mutate(pclass = as.factor(pclass)) %>%
+  mutate(sex = as.factor(sex)) %>%
+  mutate(sex = ifelse(sex == 0, "male", "female")) %>%
+  mutate(relatives = as.factor(relatives)) %>%
+  mutate(embarked = as.factor(embarked))
+```
+
+##### 5.2 Trainingsdaten:
+
+```{r}
+train_data_dt <- titanic_algo_dt[trainIndex,]
+```
+
+##### 5.3 Modell
+
+Modell erstellen:
+
+```{r}
+set.seed(1234)
+model_dt <- rpart(formula = survived ~ ., data = train_data_dt, method = "class")
+```
+
+Modell speichern:
+
+```{r}
+saveRDS(model_dt, "./titanic_dt.rds")
+```
+
+#### 6. App
+
+Die fertige App ist unter der URL https://lesley9000.shinyapps.io/Titanic-Orakel/ zu finden.
