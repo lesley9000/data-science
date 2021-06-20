@@ -1,6 +1,8 @@
 ---
 title: "Session 05 | 2021-05-15"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 #### 1. Einleitung
@@ -260,6 +262,36 @@ book_cluster <- book_cluster %>%
   mutate(hc = cut4)
 ```
 
+Nun lässt sich genauer betrachten, welche Datensätze in welchem Cluster gelandet sind.
+
+Cluster 1 mit 68 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(hc == 1))
+```
+
+Cluster 2 mit 15 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(hc == 2))
+```
+
+Cluster 3 mit 5 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(hc == 3))
+```
+
+Cluster 4 mit 12 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(hc == 4))
+```
+
 #### 6. K-Means
 
 Wie beim Hierarchischen Clustering, verlangt auch der K-Means-Algorithmus danach, dass ein Mensch die Anzahl an Clustern vorgibt. Orientiert am obigen Elbow-Diagramm, soll auch K-Means sich nun daran versuchen, vier Cluster zu erstellen.
@@ -286,6 +318,36 @@ Diese Ergebnisse werden dem ursprünglichen Data Frame *book_cluster* hinzugefü
 ```{r}
 book_cluster <- book_cluster %>%
   mutate(km = km$cluster)
+```
+
+Nun lässt sich genauer betrachten, welche Datensätze in welchem Cluster gelandet sind.
+
+Cluster 1 mit 38 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(km == 1))
+```
+
+Cluster 2 mit 25 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(km == 2))
+```
+
+Cluster 3 mit 15 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(km == 3))
+```
+
+Cluster 4 mit 22 Datensätzen:
+
+```{r}
+(book_cluster %>%
+   filter(km == 4))
 ```
 
 Die Schwierigkeit beim Plotten der Ergebnisse in einem Koordinatensystem ist, dass das vorliegende Data Frame viele Variablen und dementsprechend auch viele Dimensionen aufweist, die für einen Plot auf zwei Dimensionen heruntergebrochen werden müssen (Dimensionality Reduction). Dies gelingt mithilfe von Principal Component Analysis (PCA), einem Algorithmus, welcher zwei neue Variablen (Component 1 und Component 2) hervorbringt, die gewissermaßen Projektionen der ursprünglichen Daten darstellen und in einem Koordinatensystem geplotten werden können.
